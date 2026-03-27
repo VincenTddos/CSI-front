@@ -63,6 +63,9 @@ export function RealtimeMonitoring() {
   const [thinkingResult, setThinkingResult] = useState<string | null>(null);
   const [fullHistory, setFullHistory] = useState<any[]>([]);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
+  const [movementScore, setMovementScore] = useState(12);
+  const [harActivity, setHarActivity] = useState<{ label: string; confidence: number; icon: string }>({ label: '靜坐', confidence: 88, icon: '🪑' });
   const { isDeveloperMode, manualState, sensitivity, sceneMode } = useDeveloper();
 
   const areas = user?.role === 'family' 
@@ -156,6 +159,26 @@ export function RealtimeMonitoring() {
     return () => clearInterval(interval);
   }, [isFallDetected, isDeveloperMode, manualState, sensitivity]);
 
+  // Update movement score and HAR based on state
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (isFallDetected) {
+        setMovementScore(65 + Math.round(Math.random() * 30));
+        setHarActivity({ label: '跌倒風險', confidence: 88 + Math.round(Math.random() * 10), icon: '⚠️' });
+      } else {
+        const score = 5 + Math.round(Math.random() * 20);
+        setMovementScore(score);
+        const activities = [
+          { label: '靜坐', confidence: 85 + Math.round(Math.random() * 12), icon: '🪑' },
+          { label: '行走', confidence: 70 + Math.round(Math.random() * 20), icon: '🚶' },
+          { label: '睡眠', confidence: 80 + Math.round(Math.random() * 15), icon: '😴' },
+        ];
+        setHarActivity(activities[Math.floor(Math.random() * activities.length)]);
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [isFallDetected]);
+
   // Auto-show AI popup when fall is detected
   useEffect(() => {
     if (isFallDetected) {
@@ -175,24 +198,43 @@ export function RealtimeMonitoring() {
       return;
     }
 
-    const headers = ["Timestamp", "Subcarrier_1", "Subcarrier_2", "Subcarrier_3", "Fall_Detected"];
-    const csvRows = [
-      headers.join(","),
-      ...exportData.map(d => [
-        d.time,
-        d.subcarrier1.toFixed(2),
-        d.subcarrier2.toFixed(2),
-        d.subcarrier3.toFixed(2),
-        isFallDetected ? "1" : "0"
-      ].join(","))
-    ];
+    let fileContent = "";
+    let mimeType = "";
+    let fileExtension = "";
 
-    const csvContent = csvRows.join("\n");
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    if (exportFormat === 'csv') {
+      const headers = ["Timestamp", "Subcarrier_1", "Subcarrier_2", "Subcarrier_3", "Fall_Detected"];
+      const csvRows = [
+        headers.join(","),
+        ...exportData.map(d => [
+          d.time,
+          d.subcarrier1.toFixed(2),
+          d.subcarrier2.toFixed(2),
+          d.subcarrier3.toFixed(2),
+          isFallDetected ? "1" : "0"
+        ].join(","))
+      ];
+      fileContent = csvRows.join("\n");
+      mimeType = 'text/csv;charset=utf-8;';
+      fileExtension = 'csv';
+    } else {
+      const jsonData = exportData.map(d => ({
+        timestamp: d.time,
+        subcarrier_1: parseFloat(d.subcarrier1.toFixed(2)),
+        subcarrier_2: parseFloat(d.subcarrier2.toFixed(2)),
+        subcarrier_3: parseFloat(d.subcarrier3.toFixed(2)),
+        fall_detected: isFallDetected
+      }));
+      fileContent = JSON.stringify(jsonData, null, 2);
+      mimeType = 'application/json;charset=utf-8;';
+      fileExtension = 'json';
+    }
+
+    const blob = new Blob([fileContent], { type: mimeType });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `CSI_Data_Export_${new Date().toISOString().slice(0,19)}.csv`);
+    link.setAttribute("download", `CSI_Data_Export_${new Date().toISOString().slice(0,19).replace(/:/g, '-')}.${fileExtension}`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -222,7 +264,21 @@ export function RealtimeMonitoring() {
                 <X className="w-5 h-5 text-slate-400" />
               </button>
             </div>
-            <div className="p-6 space-y-3">
+            <div className="p-4 px-6 bg-white space-y-3">
+              <div className="flex gap-2 mb-2">
+                <button 
+                  onClick={() => setExportFormat('csv')}
+                  className={cn("flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all", exportFormat === 'csv' ? "bg-green-50 border-green-200 text-green-700" : "bg-slate-50 border-slate-200 text-slate-500")}
+                >
+                  .CSV 格式
+                </button>
+                <button 
+                  onClick={() => setExportFormat('json')}
+                  className={cn("flex-1 py-1.5 text-xs font-bold rounded-lg border transition-all", exportFormat === 'json' ? "bg-amber-50 border-amber-200 text-amber-700" : "bg-slate-50 border-slate-200 text-slate-500")}
+                >
+                  .JSON 格式
+                </button>
+              </div>
               {[
                 { label: '最近 10 秒', value: 10 },
                 { label: '最近 30 秒', value: 30 },
@@ -244,7 +300,7 @@ export function RealtimeMonitoring() {
             </div>
             <div className="p-6 bg-slate-50 border-t border-slate-100">
               <p className="text-[10px] text-slate-400 text-center">
-                匯出格式：CSV (UTF-8) | 包含子載波振幅與跌倒標記
+                匯出格式：{exportFormat.toUpperCase()} (UTF-8) | {exportFormat === 'csv' ? '包含子載波振幅與跌倒標記' : '結構化陣列資料'}
               </p>
             </div>
           </div>
@@ -309,6 +365,56 @@ export function RealtimeMonitoring() {
                   ))}
                 </select>
                 <ChevronDown className="w-4 h-4 text-slate-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              </div>
+            </div>
+          </div>
+
+          {/* Movement Score + HAR */}
+          <div className="grid grid-cols-2 gap-4">
+            {/* Movement Score Gauge */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 flex items-center gap-4">
+              <div className="relative w-16 h-16 shrink-0">
+                <svg className="w-16 h-16 -rotate-90" viewBox="0 0 64 64">
+                  <circle cx="32" cy="32" r="28" fill="none" stroke="#f1f5f9" strokeWidth="6" />
+                  <circle cx="32" cy="32" r="28" fill="none"
+                    stroke={movementScore > 50 ? '#FF3B30' : movementScore > 20 ? '#FFCC00' : '#34C759'}
+                    strokeWidth="6" strokeLinecap="round"
+                    strokeDasharray={`${movementScore * 1.76} 176`}
+                    className="transition-all duration-1000" />
+                </svg>
+                <span className="absolute inset-0 flex items-center justify-center text-sm font-mono font-bold text-slate-800">
+                  {movementScore}
+                </span>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500 font-medium">Movement Score</p>
+                <p className={cn("text-sm font-bold",
+                  movementScore > 50 ? 'text-[#FF3B30]' : movementScore > 20 ? 'text-amber-500' : 'text-[#34C759]'
+                )}>
+                  {movementScore > 50 ? '高度活動' : movementScore > 20 ? '中度活動' : '低度 / 靜止'}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-0.5">閾值: 15 | 模式: MVS</p>
+              </div>
+            </div>
+
+            {/* HAR Activity Recognition */}
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 flex items-center gap-4">
+              <div className="w-16 h-16 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center text-2xl shrink-0">
+                {harActivity.icon}
+              </div>
+              <div>
+                <p className="text-xs text-slate-500 font-medium">HAR 活動辨識</p>
+                <p className={cn("text-sm font-bold",
+                  harActivity.label === '跌倒風險' ? 'text-[#FF3B30]' : 'text-slate-800'
+                )}>
+                  {harActivity.label}
+                </p>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  <div className="w-16 h-1 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-[#007AFF] rounded-full transition-all duration-500" style={{ width: `${harActivity.confidence}%` }} />
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-mono">{harActivity.confidence}%</span>
+                </div>
               </div>
             </div>
           </div>

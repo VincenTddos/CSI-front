@@ -1,74 +1,43 @@
 import { useState, useEffect, useRef } from 'react';
-
-// 定義 CSI 數據結構 (根據 espectre/wigay 的輸出調整)
-export interface CSIDataPacket {
-  check: string;      // 例如 "CSI"
-  mac: string;       // 設備 MAC
-  len: number;       // 數據長度
-  first: number;     // 第一個 byte
-  data: number[];    // CSI 振幅數據 (通常 64 或 128 個數值)
-  path: string;      // 路由路徑
-}
-
-export interface MovementData {
-  score: number;     // 移動分數 (Movement Score)
-  isMotion: boolean; // 是否偵測到活動
-}
+import { CSIDataPacket, MovementData } from '../types';
 
 export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<CSIDataPacket | null>(null);
   const [movementMetrics, setMovementMetrics] = useState<MovementData>({ score: 0, isMotion: false });
-  const socketRef = useRef<WebSocket | null>(null);
+  const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
-    // 建立連接
-    const connect = () => {
-      try {
-        const ws = new WebSocket(url);
-        
-        ws.onopen = () => {
-          console.log('🔗 CSI WebSocket Connected');
-          setIsConnected(true);
-        };
+    // 建立 Worker 而非直接建立 WebSocket
+    // 注意: Vite 原生支援 Worker 導入，無需額外配置
+    const worker = new Worker(new URL('../workers/csi.worker.ts', import.meta.url), { type: 'module' });
+    workerRef.current = worker;
 
-        ws.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            
-            // 判斷數據類型：是原始 CSI 還是 移動分數？
-            // 假設 wigay 傳送的格式
-            if (data.type === 'csi' && data.payload) {
-              setLastMessage(data.payload);
-            } else if (data.type === 'movement') {
-              setMovementMetrics({
-                score: data.score || 0,
-                isMotion: data.hasMotion || false
-              });
-            }
-          } catch (e) {
-            console.error('WebSocket 解析錯誤:', e);
-          }
-        };
+    // 監聽 Worker 回傳的訊息
+    worker.onmessage = (event) => {
+      const { type, payload } = event.data;
 
-        ws.onclose = () => {
-          console.log('Reconnecting WebSocket...');
-          setIsConnected(false);
-          setTimeout(connect, 3000); // 斷線重連
-        };
-
-        socketRef.current = ws;
-      } catch (error) {
-        console.error('Connection failed:', error);
+      if (type === 'STATUS') {
+        setIsConnected(payload.isConnected);
+      } else if (type === 'DATA') {
+        // payload 可能包含 { raw: CSIDataPacket, metrics: MovementData }
+        if (payload.raw) {
+          setLastMessage(payload.raw);
+        }
+        if (payload.metrics) {
+          setMovementMetrics(payload.metrics);
+        }
+      } else if (type === 'ERROR') {
+        console.error('CSI Worker Error:', payload);
       }
     };
 
-    connect();
+    // 發送連線指令給 Worker
+    worker.postMessage({ type: 'CONNECT', url });
 
     return () => {
-      if (socketRef.current) {
-        socketRef.current.close();
-      }
+      // 元件卸載時終止 Worker
+      worker.terminate();
     };
   }, [url]);
 

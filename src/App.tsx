@@ -1,13 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { Layout } from './components/Layout';
-import { Login } from './pages/Login';
-import { Register } from './pages/Register';
-import { RealtimeMonitoring } from './pages/RealtimeMonitoring';
-import { HealthReports } from './pages/HealthReports';
-import { DeviceManagement } from './pages/DeviceManagement';
-import { AlertNotifications } from './pages/AlertNotifications';
-import { SystemSettings } from './pages/SystemSettings';
-import { PersonnelManagement } from './pages/PersonnelManagement';
+import { 
+  Login, 
+  Register, 
+  RealtimeMonitoring, 
+  HealthReports, 
+  DeviceManagement, 
+  AlertNotifications, 
+  SystemSettings, 
+  PersonnelManagement,
+  CareRecipients,
+  DailyHealth,
+  RoutineCheckup,
+  FamilyHealthLog,
+  SubcarrierAnalyzer,
+  RoomOccupancy
+} from './pages';
 import { DeveloperProvider, useDeveloper } from './contexts/DeveloperContext';
 import { UserProvider, useUser } from './contexts/UserContext';
 import { Page } from './types';
@@ -44,6 +52,18 @@ function AppContent() {
         return <HealthReports />;
       case 'settings':
         return <SystemSettings />;
+      case 'patients':
+        return <CareRecipients onNavigate={setCurrentPage} />;
+      case 'daily-health':
+        return <DailyHealth />;
+      case 'routine-checkup':
+        return <RoutineCheckup />;
+      case 'health-log':
+        return <FamilyHealthLog />;
+      case 'subcarrier':
+        return <SubcarrierAnalyzer />;
+      case 'occupancy':
+        return <RoomOccupancy />;
       default:
         return (
           <div className="flex items-center justify-center h-full text-gray-500">

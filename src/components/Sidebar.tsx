@@ -7,7 +7,14 @@ import {
   BellRing, 
   FileText, 
   Settings,
-  LogOut
+  LogOut,
+  HeartPulse,
+  ClipboardList,
+  Contact,
+  BookHeart,
+  BarChart3,
+  Radio,
+  LayoutGrid
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { Page } from '../types';
@@ -22,16 +29,22 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
   const { user, logout } = useUser();
 
   const menuItems = [
-    { id: 'device', label: '設備管理', icon: MonitorSmartphone, roles: ['admin', 'medical'] },
+    { id: 'realtime', label: '監控面板', icon: Activity, roles: ['admin', 'medical', 'family'] },
+    { id: 'patients', label: '受護者', icon: Contact, roles: ['admin', 'medical'] },
+    { id: 'health-log', label: '健康日誌', icon: BookHeart, roles: ['family'] },
+    { id: 'device', label: '區域管理', icon: MonitorSmartphone, roles: ['admin', 'medical', 'family'] },
+    { id: 'occupancy', label: '房間佔用', icon: LayoutGrid, roles: ['admin', 'medical'] },
+    { id: 'subcarrier', label: '子載波分析', icon: Radio, roles: ['admin'] },
+    { id: 'daily-health', label: '每日健康', icon: HeartPulse, roles: ['admin', 'medical'] },
+    { id: 'routine-checkup', label: '日常檢查', icon: ClipboardList, roles: ['admin', 'medical'] },
     { id: 'personnel', label: '人員管理', icon: Users, roles: ['admin'] },
-    { id: 'realtime', label: '即時監控', icon: Activity, roles: ['admin', 'medical', 'family'] },
+    { id: 'health', label: '健康報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
     { id: 'alerts', label: '警報通知', icon: BellRing, roles: ['admin', 'medical', 'family'] },
-    { id: 'health', label: '健康報表', icon: FileText, roles: ['admin', 'medical', 'family'] },
     { id: 'settings', label: '系統設定', icon: Settings, roles: ['admin', 'medical'] },
   ] as const;
 
   const filteredItems = menuItems.filter(item => 
-    !item.roles || (user && item.roles.includes(user.role))
+    !item.roles || (user && (item.roles as readonly string[]).includes(user.role))
   );
 
   return (
