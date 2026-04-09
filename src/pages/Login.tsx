@@ -3,17 +3,16 @@ import { Page, UserRole } from '../types';
 import { Activity, Lock, User, AlertCircle } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 
-interface LoginProps {
-  onNavigate: (page: Page) => void;
-}
+import { useNavigate } from 'react-router-dom';
 
-export function Login({ onNavigate }: LoginProps) {
+export function Login() {
   const [role, setRole] = useState<UserRole>('medical');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { login } = useUser();
+  const navigate = useNavigate();
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +37,7 @@ export function Login({ onNavigate }: LoginProps) {
       if (result.success) {
         setUsername('');
         setPassword('');
-        onNavigate('device');
+        navigate('/realtime');
       } else {
         setError(result.message);
       }
@@ -125,8 +124,8 @@ export function Login({ onNavigate }: LoginProps) {
         <div className="mt-8 text-center">
           <p className="text-sm text-slate-500">
             尚未有帳號？{' '}
-            <button 
-              onClick={() => onNavigate('register')}
+            <button
+              onClick={() => navigate('/register')}
               disabled={loading}
               className="text-[#007AFF] font-medium hover:underline transition-all disabled:opacity-50"
             >

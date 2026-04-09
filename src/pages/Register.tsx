@@ -3,11 +3,9 @@ import { Page } from '../types';
 import { Activity, ArrowLeft, Building2, HeartPulse, ShieldCheck, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 
-interface RegisterProps {
-  onNavigate: (page: Page) => void;
-}
+import { useNavigate } from 'react-router-dom';
 
-export function Register({ onNavigate }: RegisterProps) {
+export function Register() {
   const [role, setRole] = useState('medical');
   const [realName, setRealName] = useState('');
   const [username, setUsername] = useState('');
@@ -21,6 +19,7 @@ export function Register({ onNavigate }: RegisterProps) {
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
   const { register } = useUser();
+  const navigate = useNavigate();
 
   const validateForm = (): boolean => {
     if (!realName.trim()) {
@@ -83,7 +82,7 @@ export function Register({ onNavigate }: RegisterProps) {
       if (result.success) {
         setSuccess(result.message);
         setTimeout(() => {
-          onNavigate('login');
+          navigate('/login');
         }, 1500);
       } else {
         setError(result.message);
@@ -95,8 +94,8 @@ export function Register({ onNavigate }: RegisterProps) {
   return (
     <div className="min-h-screen bg-[#E8E1D5] flex items-center justify-center p-4 py-12">
       <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl p-8 md:p-10 relative">
-        <button 
-          onClick={() => onNavigate('login')}
+        <button
+          onClick={() => navigate('/login')}
           disabled={loading}
           className="absolute top-6 left-6 text-slate-400 hover:text-slate-600 transition-colors flex items-center gap-2 text-sm font-medium disabled:opacity-50"
         >

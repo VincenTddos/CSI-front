@@ -17,14 +17,13 @@ function savePatients(patients: Patient[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(patients));
 }
 
-interface CareRecipientsProps {
-  onNavigate: (page: Page) => void;
-}
+import { useNavigate } from 'react-router-dom';
 
-export function CareRecipients({ onNavigate }: CareRecipientsProps) {
+export function CareRecipients() {
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [patients, setPatients] = useState<Patient[]>(loadPatients);
+  const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
 
   // Detail View State
@@ -303,14 +302,14 @@ export function CareRecipients({ onNavigate }: CareRecipientsProps) {
                   <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">快速前往</h2>
                   <div className="flex gap-4">
                     <button
-                      onClick={() => onNavigate('daily-health')}
+                      onClick={() => navigate('/daily-health')}
                       className="px-5 py-3 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition-colors text-left"
                     >
                       <span className="text-[#007AFF] font-bold block">每日健康</span>
                       <span className="text-slate-500 text-xs">血壓、血氧紀錄</span>
                     </button>
                     <button
-                      onClick={() => onNavigate('routine-checkup')}
+                      onClick={() => navigate('/routine-checkup')}
                       className="px-5 py-3 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-xl transition-colors text-left"
                     >
                       <span className="text-[#007AFF] font-bold block">日常檢查</span>

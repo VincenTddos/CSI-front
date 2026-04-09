@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { 
   Login, 
@@ -18,85 +19,71 @@ import {
 } from './pages';
 import { DeveloperProvider, useDeveloper } from './contexts/DeveloperContext';
 import { UserProvider, useUser } from './contexts/UserContext';
-import { Page } from './types';
 
-function AppContent() {
-  const [currentPage, setCurrentPage] = useState<Page>('login');
-  const { isDeveloperMode, setManualState } = useDeveloper();
+// Protected Route Component
+function ProtectedRoute({ children }: { children: JSX.Element }) {
   const { user } = useUser();
+  const location = useLocation();
 
-  // Redirect to login if not authenticated
-  useEffect(() => {
-    if (!user && currentPage !== 'register') {
-      setCurrentPage('login');
-    } else if (user && (currentPage === 'login' || currentPage === 'register')) {
-      setCurrentPage('realtime');
-    }
-  }, [user, currentPage]);
-
-  const renderPage = () => {
-    switch (currentPage) {
-      case 'login':
-        return <Login onNavigate={setCurrentPage} />;
-      case 'register':
-        return <Register onNavigate={setCurrentPage} />;
-      case 'device':
-        return <DeviceManagement />;
-      case 'personnel':
-        return <PersonnelManagement />;
-      case 'realtime':
-        return <RealtimeMonitoring />;
-      case 'alerts':
-        return <AlertNotifications />;
-      case 'health':
-        return <HealthReports />;
-      case 'settings':
-        return <SystemSettings />;
-      case 'patients':
-        return <CareRecipients onNavigate={setCurrentPage} />;
-      case 'daily-health':
-        return <DailyHealth />;
-      case 'routine-checkup':
-        return <RoutineCheckup />;
-      case 'health-log':
-        return <FamilyHealthLog />;
-      case 'subcarrier':
-        return <SubcarrierAnalyzer />;
-      case 'occupancy':
-        return <RoomOccupancy />;
-      default:
-        return (
-          <div className="flex items-center justify-center h-full text-gray-500">
-            <h2 className="text-2xl font-medium">Ê≠§È†ÅÈù¢Ê≠£Âú®Âª∫ÁΩÆ‰∏≠ (Under Construction)</h2>
-          </div>
-        );
-    }
-  };
-
-  if (currentPage === 'login' || currentPage === 'register') {
-    return renderPage();
+  if (!user) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
+  return children;
+}
+
+function DevBackdoor() {
+  const { isDeveloperMode, setManualState } = useDeveloper();
+  if (!import.meta.env.DEV || !isDeveloperMode) return null;
 
   return (
-    <Layout currentPage={currentPage} onNavigate={setCurrentPage}>
-      {renderPage()}
-      
-      {/* Hidden Developer Buttons */}
-      {isDeveloperMode && (
-        <>
-          <button 
-            onClick={() => setManualState('safe')}
-            className="fixed top-0 left-0 w-16 h-16 z-[9999] opacity-0 cursor-default"
-            title="Set Safe State"
-          />
-          <button 
-            onClick={() => setManualState('fall')}
-            className="fixed top-0 right-0 w-16 h-16 z-[9999] opacity-0 cursor-default"
-            title="Set Fall State"
-          />
-        </>
-      )}
-    </Layout>
+    <>
+      <button 
+        onClick={() => setManualState('safe')}
+        className="fixed top-0 left-0 w-16 h-16 z-[9999] opacity-0 cursor-default"
+        title="Set Safe State"
+      />
+      <button 
+        onClick={() => setManualState('fall')}
+        className="fixed top-0 right-0 w-16 h-16 z-[9999] opacity-0 cursor-default"
+        title="Set Fall State"
+      />
+    </>
+  );
+}
+
+function AppContent() {
+  const { user } = useUser();
+
+  return (
+    <Router>
+      <Routes>
+        <Route path="/login" element={user ? <Navigate to="/realtime" replace /> : <Login />} />
+        <Route path="/register" element={user ? <Navigate to="/realtime" replace /> : <Register />} />
+        
+        {/* Protected Routes Layout */}
+        <Route path="/" element={<ProtectedRoute><Layout><DevBackdoor /></Layout></ProtectedRoute>}>
+          <Route index element={<Navigate to="/realtime" replace />} />
+          <Route path="device" element={<DeviceManagement />} />
+          <Route path="personnel" element={<PersonnelManagement />} />
+          <Route path="realtime" element={<RealtimeMonitoring />} />
+          <Route path="alerts" element={<AlertNotifications />} />
+          <Route path="health" element={<HealthReports />} />
+          <Route path="settings" element={<SystemSettings />} />
+          <Route path="patients" element={<CareRecipients />} />
+          <Route path="daily-health" element={<DailyHealth />} />
+          <Route path="routine-checkup" element={<RoutineCheckup />} />
+          <Route path="health-log" element={<FamilyHealthLog />} />
+          <Route path="subcarrier" element={<SubcarrierAnalyzer />} />
+          <Route path="occupancy" element={<RoomOccupancy />} />
+          
+          <Route path="*" element={
+            <div className="flex items-center justify-center h-full text-gray-500">
+              <h2 className="text-2xl font-medium">¶π≠∂≠±•ø¶b´ÿ∏m§§ (Under Construction)</h2>
+            </div>
+          } />
+        </Route>
+      </Routes>
+    </Router>
   );
 }
 

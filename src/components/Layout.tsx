@@ -1,19 +1,18 @@
 import React from 'react';
 import { Sidebar } from './Sidebar';
-import { Page } from '../types';
+import { Outlet } from 'react-router-dom';
 
 interface LayoutProps {
-  children: React.ReactNode;
-  currentPage: Page;
-  onNavigate: (page: Page) => void;
+  children?: React.ReactNode;
 }
 
-export function Layout({ children, currentPage, onNavigate }: LayoutProps) {
+export function Layout({ children }: LayoutProps) {
   return (
     <div className="flex h-screen w-full bg-[#E8E1D5] text-slate-800 font-sans overflow-hidden">
-      <Sidebar currentPage={currentPage} onNavigate={onNavigate} />
+      <Sidebar />
       <main className="flex-1 h-full overflow-y-auto p-6 md:p-8">
         <div className="max-w-7xl mx-auto h-full">
+          <Outlet />
           {children}
         </div>
       </main>

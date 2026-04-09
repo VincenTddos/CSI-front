@@ -20,13 +20,15 @@ import { cn } from '../lib/utils';
 import { Page } from '../types';
 import { useUser } from '../contexts/UserContext';
 
-interface SidebarProps {
-  currentPage: Page;
-  onNavigate: (page: Page) => void;
-}
+import { useLocation, useNavigate } from 'react-router-dom';
 
-export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
+export function Sidebar() {
   const { user, logout } = useUser();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  // Parse current route to match item type
+  const currentPage = location.pathname.substring(1) || 'realtime';
 
   const menuItems = [
     { id: 'realtime', label: '監控面板', icon: Activity, roles: ['admin', 'medical', 'family'] },
@@ -83,7 +85,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
           return (
             <button
               key={item.id}
-              onClick={() => onNavigate(item.id as Page)}
+              onClick={() => navigate(`/${item.id}`)}
               className={cn(
                 "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 relative group",
                 isActive 
