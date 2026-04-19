@@ -102,6 +102,14 @@ function connectWebSocket(url: string) {
         } else if (rawData.type === 'movement') {
             // 如果後端已經傳來 movement data，直接轉發
             postMessage({ type: 'DATA', payload: { metrics: rawData } });
+
+        } else if (rawData.status && rawData.ai_analysis && rawData.location) {
+            // core_bridge.py 的完整狀態封包 (含三角定位座標)
+            // 包含: status, ai_analysis, location, timestamp
+            postMessage({
+              type: 'BRIDGE_STATUS',
+              payload: rawData
+            });
         }
 
       } catch (err) {

@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { CSIDataPacket, MovementData } from '../types';
+import { CSIDataPacket, MovementData, CoreBridgePacket, LocationData } from '../types';
 
 export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<CSIDataPacket | null>(null);
   const [movementMetrics, setMovementMetrics] = useState<MovementData>({ score: 0, isMotion: false });
+  const [bridgeStatus, setBridgeStatus] = useState<CoreBridgePacket | null>(null);
+  const [locationData, setLocationData] = useState<LocationData>({ x: null, y: null, timestamp: '' });
   const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
@@ -19,6 +21,7 @@ export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
 
       if (type === 'STATUS') {
         setIsConnected(payload.isConnected);
+
       } else if (type === 'DATA') {
         // payload 可能包含 { raw: CSIDataPacket, metrics: MovementData }
         if (payload.raw) {
@@ -27,6 +30,29 @@ export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
         if (payload.metrics) {
           setMovementMetrics(payload.metrics);
         }
+
+      } else if (type === 'BRIDGE_STATUS') {
+        // core_bridge.py 的完整狀態封包 (含三角定位與 AI 分析)
+        const packet = payload as CoreBridgePacket;
+        setBridgeStatus(packet);
+
+        // 更新 movement metrics
+        if (packet.ai_analysis) {
+          setMovementMetrics({
+            score: packet.ai_analysis.movement_score,
+            isMotion: packet.ai_analysis.movement_score > 0.5,
+          });
+        }
+
+        // 更新定位座標
+        if (packet.location) {
+          setLocationData({
+            x: packet.location.raw_x,
+            y: packet.location.raw_y,
+            timestamp: packet.timestamp,
+          });
+        }
+
       } else if (type === 'ERROR') {
         console.error('CSI Worker Error:', payload);
       }
@@ -41,5 +67,5 @@ export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
     };
   }, [url]);
 
-  return { isConnected, lastMessage, movementMetrics };
+  return { isConnected, lastMessage, movementMetrics, bridgeStatus, locationData };
 }

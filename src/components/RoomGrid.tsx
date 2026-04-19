@@ -1,0 +1,258 @@
+import React, { useState, useEffect } from 'react';
+import { MapPin, User, Clock, Wifi, Moon, Footprints, ChevronRight } from 'lucide-react';
+import { cn } from '../lib/utils';
+
+export interface RoomStatus {
+  id: string;
+  name: string;
+  floor: string;
+  status: 'motion' | 'idle' | 'empty';
+  lastActivity: string;
+  movementScore: number;
+  sensorName: string;
+  sensorSignal: number;
+  resident?: string;
+}
+
+function generateRooms(): RoomStatus[] {
+  return [
+    { id: 'r502', name: '502 號房', floor: '5F', status: 'motion', lastActivity: '剛剛', movementScore: 72, sensorName: 'CSI-Node-502', sensorSignal: -42, resident: '王伯伯' },
+    { id: 'r503', name: '503 號房', floor: '5F', status: 'idle', lastActivity: '8 分鐘前', movementScore: 3, sensorName: 'CSI-Node-503', sensorSignal: -48, resident: '陳奶奶' },
+    { id: 'r504', name: '504 號房', floor: '5F', status: 'empty', lastActivity: '2 小時前', movementScore: 0, sensorName: 'CSI-Node-504', sensorSignal: -55 },
+    { id: 'r606', name: '606 號房', floor: '6F', status: 'motion', lastActivity: '剛剛', movementScore: 58, sensorName: 'CSI-Node-606', sensorSignal: -45, resident: '李伯伯' },
+    { id: 'r607', name: '607 號房', floor: '6F', status: 'idle', lastActivity: '15 分鐘前', movementScore: 5, sensorName: 'CSI-Node-607', sensorSignal: -50, resident: '張奶奶' },
+    { id: 'r608', name: '608 號房', floor: '6F', status: 'motion', lastActivity: '剛剛', movementScore: 45, sensorName: 'CSI-Node-608', sensorSignal: -47, resident: '林伯伯' },
+    { id: 'r609', name: '609 號房', floor: '6F', status: 'empty', lastActivity: '1 小時前', movementScore: 0, sensorName: 'CSI-Node-609', sensorSignal: -90 },
+    { id: 'r611', name: '611 號房', floor: '6F', status: 'idle', lastActivity: '22 分鐘前', movementScore: 2, sensorName: 'CSI-Node-611', sensorSignal: -52, resident: '黃爺爺' },
+    { id: 'common5', name: '5F 交誼廳', floor: '5F', status: 'motion', lastActivity: '剛剛', movementScore: 85, sensorName: 'CSI-Node-5F-Common', sensorSignal: -38 },
+    { id: 'common6', name: '6F 交誼廳', floor: '6F', status: 'idle', lastActivity: '35 分鐘前', movementScore: 1, sensorName: 'CSI-Node-6F-Common', sensorSignal: -44 },
+  ];
+}
+
+interface RoomGridProps {
+  /** Whether to render in compact mode (for embedding in narrow containers) */
+  compact?: boolean;
+  /** Callback when a room card is clicked */
+  onRoomClick?: (room: RoomStatus) => void;
+}
+
+export function RoomGrid({ compact = false, onRoomClick }: RoomGridProps) {
+  const [rooms, setRooms] = useState(generateRooms);
+  const [filterFloor, setFilterFloor] = useState<'all' | '5F' | '6F'>('all');
+
+  // Simulate movement score updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRooms(prev => prev.map(r => {
+        const delta = (Math.random() - 0.5) * 10;
+        let newScore = Math.max(0, Math.min(100, r.movementScore + delta));
+        let newStatus: RoomStatus['status'] = 'empty';
+        if (newScore > 15) newStatus = 'motion';
+        else if (newScore > 2) newStatus = 'idle';
+        const newLastActivity = newStatus === 'motion' ? '剛剛' : r.lastActivity;
+        return { ...r, movementScore: Math.round(newScore), status: newStatus, lastActivity: newLastActivity };
+      }));
+    }, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const filtered = rooms.filter(r => filterFloor === 'all' || r.floor === filterFloor);
+  const motionCount = rooms.filter(r => r.status === 'motion').length;
+  const idleCount = rooms.filter(r => r.status === 'idle').length;
+  const emptyCount = rooms.filter(r => r.status === 'empty').length;
+
+  const getStatusConfig = (status: RoomStatus['status']) => {
+    switch (status) {
+      case 'motion': return { label: '活動', color: 'bg-green-500', dotColor: 'bg-green-400', textColor: 'text-green-600', bgColor: 'bg-green-50 border-green-100', icon: Footprints };
+      case 'idle': return { label: '靜止', color: 'bg-blue-400', dotColor: 'bg-blue-300', textColor: 'text-blue-600', bgColor: 'bg-blue-50 border-blue-100', icon: Moon };
+      case 'empty': return { label: '無人', color: 'bg-slate-300', dotColor: 'bg-slate-300', textColor: 'text-slate-400', bgColor: 'bg-slate-50 border-slate-100', icon: MapPin };
+    }
+  };
+
+  // =========================================
+  //  COMPACT MODE: 2-column mini tile grid
+  // =========================================
+  if (compact) {
+    return (
+      <div className="flex flex-col h-full">
+        {/* Compact header: inline stats + filter */}
+        <div className="flex items-center justify-between mb-2.5">
+          <div className="flex items-center gap-3 text-[10px]">
+            <span className="flex items-center gap-1 text-green-600 font-bold">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+              {motionCount}
+            </span>
+            <span className="flex items-center gap-1 text-blue-500 font-bold">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+              {idleCount}
+            </span>
+            <span className="flex items-center gap-1 text-slate-400 font-bold">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-300" />
+              {emptyCount}
+            </span>
+          </div>
+          <div className="flex items-center gap-1">
+            {(['all', '5F', '6F'] as const).map(floor => (
+              <button key={floor} onClick={() => setFilterFloor(floor)}
+                className={cn(
+                  "px-2 py-0.5 rounded-md text-[9px] font-bold transition-all",
+                  filterFloor === floor
+                    ? "bg-[#007AFF] text-white shadow-sm"
+                    : "text-slate-400 hover:text-slate-600"
+                )}>
+                {floor === 'all' ? '全部' : floor}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* 2-col mini tile grid */}
+        <div className="flex-1 overflow-y-auto -mx-0.5 px-0.5">
+          <div className="grid grid-cols-2 gap-1.5">
+            {filtered.map(room => {
+              const cfg = getStatusConfig(room.status);
+              const roomNum = room.name.match(/\d+/)?.[0] || room.name;
+              return (
+                <button
+                  key={room.id}
+                  onClick={() => onRoomClick?.(room)}
+                  className={cn(
+                    "relative text-left rounded-xl p-2.5 transition-all hover:shadow-md active:scale-[0.97] border group",
+                    room.status === 'motion'
+                      ? "bg-gradient-to-br from-green-50 to-white border-green-200/60"
+                      : room.status === 'idle'
+                      ? "bg-gradient-to-br from-blue-50/50 to-white border-blue-200/40"
+                      : "bg-white border-slate-100"
+                  )}
+                >
+                  {/* Room number + status dot */}
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-1">
+                      <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", cfg.dotColor, room.status === 'motion' && "animate-pulse")} />
+                      <span className="text-[11px] font-bold text-slate-800 tracking-tight">{roomNum}</span>
+                    </div>
+                    <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded-md", cfg.textColor,
+                      room.status === 'motion' ? "bg-green-100" : room.status === 'idle' ? "bg-blue-100/60" : "bg-slate-100"
+                    )}>
+                      {cfg.label}
+                    </span>
+                  </div>
+
+                  {/* Resident name */}
+                  <p className="text-[9px] text-slate-500 truncate mb-1.5">
+                    {room.resident || '—'}
+                  </p>
+
+                  {/* Movement score mini bar */}
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex-1 h-[3px] bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className={cn("h-full rounded-full transition-all duration-1000",
+                          room.movementScore > 50 ? "bg-green-500" : room.movementScore > 10 ? "bg-blue-400" : "bg-slate-200"
+                        )}
+                        style={{ width: `${room.movementScore}%` }}
+                      />
+                    </div>
+                    <span className="text-[8px] font-mono font-bold text-slate-500 w-5 text-right">{room.movementScore}</span>
+                  </div>
+
+                  {/* Hover chevron */}
+                  {onRoomClick && (
+                    <ChevronRight className="absolute top-1/2 -translate-y-1/2 right-1 w-3 h-3 text-slate-200 group-hover:text-[#007AFF] transition-colors" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // =========================================
+  //  FULL MODE: original list layout
+  // =========================================
+  return (
+    <div className="flex flex-col h-full">
+      {/* Summary Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-3">
+        <div className="bg-white p-4 rounded-xl border border-slate-100 flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center"><Wifi className="w-5 h-5 text-slate-500" /></div>
+          <div><p className="text-xs text-slate-500">總感測節點</p><p className="text-lg font-bold text-slate-800">{rooms.length}</p></div>
+        </div>
+        <div className="bg-white p-4 rounded-xl border border-green-100 flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-green-50 flex items-center justify-center"><Footprints className="w-5 h-5 text-green-500" /></div>
+          <div><p className="text-xs text-slate-500">活動中</p><p className="text-lg font-bold text-green-600">{motionCount}</p></div>
+        </div>
+        <div className="bg-white p-4 rounded-xl border border-blue-100 flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center"><Moon className="w-5 h-5 text-blue-400" /></div>
+          <div><p className="text-xs text-slate-500">靜止 (有人)</p><p className="text-lg font-bold text-blue-600">{idleCount}</p></div>
+        </div>
+        <div className="bg-white p-4 rounded-xl border border-slate-100 flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-slate-50 flex items-center justify-center"><MapPin className="w-5 h-5 text-slate-400" /></div>
+          <div><p className="text-xs text-slate-500">無人</p><p className="text-lg font-bold text-slate-400">{emptyCount}</p></div>
+        </div>
+      </div>
+
+      {/* Floor filter */}
+      <div className="flex items-center gap-2 mb-3">
+        {(['all', '5F', '6F'] as const).map(floor => (
+          <button key={floor} onClick={() => setFilterFloor(floor)}
+            className={cn("px-3 py-1 rounded-full text-xs font-medium transition-colors",
+              filterFloor === floor ? "bg-[#007AFF] text-white" : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50"
+            )}>
+            {floor === 'all' ? '全部樓層' : floor}
+          </button>
+        ))}
+      </div>
+
+      {/* Room Grid */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filtered.map(room => {
+            const cfg = getStatusConfig(room.status);
+            const Icon = cfg.icon;
+            return (
+              <div key={room.id} className={cn("bg-white rounded-xl border p-4 transition-all hover:shadow-md", cfg.bgColor)}>
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2">
+                    <div className={cn("w-2.5 h-2.5 rounded-full", cfg.color, room.status === 'motion' && "animate-pulse")} />
+                    <h3 className="text-sm font-bold text-slate-800">{room.name}</h3>
+                    <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-medium">{room.floor}</span>
+                  </div>
+                  <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full", cfg.textColor, cfg.bgColor)}>
+                    <Icon className="w-3 h-3 inline mr-0.5" />{cfg.label}
+                  </span>
+                </div>
+
+                {room.resident && (
+                  <div className="flex items-center gap-1.5 text-xs text-slate-600 mb-2">
+                    <User className="w-3 h-3 text-slate-400" /> {room.resident}
+                  </div>
+                )}
+
+                {/* Movement Score Bar */}
+                <div className="mb-2">
+                  <div className="flex items-center justify-between text-[10px] mb-1">
+                    <span className="text-slate-400">Movement Score</span>
+                    <span className="font-mono font-bold text-slate-700">{room.movementScore}</span>
+                  </div>
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={cn("h-full rounded-full transition-all duration-1000",
+                      room.movementScore > 50 ? "bg-green-500" : room.movementScore > 10 ? "bg-blue-400" : "bg-slate-300"
+                    )} style={{ width: `${room.movementScore}%` }} />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between text-[10px] text-slate-400">
+                  <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {room.lastActivity}</span>
+                  <span className="flex items-center gap-1"><Wifi className="w-3 h-3" /> {room.sensorSignal} dBm</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}

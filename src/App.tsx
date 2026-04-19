@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { 
   Login, 
@@ -19,17 +19,6 @@ import {
 } from './pages';
 import { DeveloperProvider, useDeveloper } from './contexts/DeveloperContext';
 import { UserProvider, useUser } from './contexts/UserContext';
-
-// Protected Route Component
-function ProtectedRoute({ children }: { children: JSX.Element }) {
-  const { user } = useUser();
-  const location = useLocation();
-
-  if (!user) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
-  }
-  return children;
-}
 
 function DevBackdoor() {
   const { isDeveloperMode, setManualState } = useDeveloper();
@@ -51,17 +40,17 @@ function DevBackdoor() {
   );
 }
 
-function AppContent() {
+function AppRoutes() {
   const { user } = useUser();
 
   return (
-    <Router>
-      <Routes>
-        <Route path="/login" element={user ? <Navigate to="/realtime" replace /> : <Login />} />
-        <Route path="/register" element={user ? <Navigate to="/realtime" replace /> : <Register />} />
-        
-        {/* Protected Routes Layout */}
-        <Route path="/" element={<ProtectedRoute><Layout><DevBackdoor /></Layout></ProtectedRoute>}>
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      
+      {/* If user is authenticated, show protected pages */}
+      {user ? (
+        <Route path="/" element={<Layout><DevBackdoor /></Layout>}>
           <Route index element={<Navigate to="/realtime" replace />} />
           <Route path="device" element={<DeviceManagement />} />
           <Route path="personnel" element={<PersonnelManagement />} />
@@ -75,15 +64,12 @@ function AppContent() {
           <Route path="health-log" element={<FamilyHealthLog />} />
           <Route path="subcarrier" element={<SubcarrierAnalyzer />} />
           <Route path="occupancy" element={<RoomOccupancy />} />
-          
-          <Route path="*" element={
-            <div className="flex items-center justify-center h-full text-gray-500">
-              <h2 className="text-2xl font-medium">此頁面正在建置中 (Under Construction)</h2>
-            </div>
-          } />
         </Route>
-      </Routes>
-    </Router>
+      ) : null}
+      
+      {/* Default redirect */}
+      <Route path="*" element={<Navigate to="/login" replace />} />
+    </Routes>
   );
 }
 
@@ -91,7 +77,9 @@ export default function App() {
   return (
     <UserProvider>
       <DeveloperProvider>
-        <AppContent />
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
       </DeveloperProvider>
     </UserProvider>
   );

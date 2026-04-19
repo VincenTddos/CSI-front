@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <title>Wi-Care WebSocket Client Example</title>
+  <style>
+    body { font-family: monospace; background: #1a1a2e; color: #e0e0e0; padding: 24px; }
+    h1 { color: #00d4ff; }
+    .card { background: #16213e; border-radius: 8px; padding: 16px; margin: 12px 0; }
+    .label { color: #888; }
+    .value { color: #00ff88; font-weight: bold; }
+    .offline { color: #ff4444; }
+    .falling { color: #ff6600; font-size: 1.2em; }
+    pre { background: #0f0f23; padding: 12px; border-radius: 4px; overflow-x: auto; }
+    #status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+    .connected { background: #00ff88; }
+    .disconnected { background: #ff4444; }
+  </style>
+</head>
+<body>
+  <h1>Wi-Care WebSocket Client</h1>
+
+  <div class="card">
+    <span id="status-dot" class="disconnected"></span>
+    <span id="ws-status" class="offline">Disconnected</span>
+  </div>
+
+  <div class="card">
+    <div><span class="label">Movement Score: </span><span id="score" class="value">--</span></div>
+    <div><span class="label">Is Falling: </span><span id="falling" class="value">--</span></div>
+    <div><span class="label">Location X: </span><span id="loc-x" class="value">--</span></div>
+    <div><span class="label">Location Y: </span><span id="loc-y" class="value">--</span></div>
+    <div><span class="label">Timestamp: </span><span id="timestamp" class="value">--</span></div>
+  </div>
+
+  <h3>Raw JSON:</h3>
+  <pre id="raw-json">Waiting for data...</pre>
+
+  <script>
+    // ====================================================================
+    //  Wi-Care WebSocket 前端連線範例
+    //  連線目標: ws://localhost:8765 (core_bridge.py 的 WebSocket Server)
+    // ====================================================================
+
+    const WS_URL = 'ws://localhost:8765';
+    let ws = null;
+    let reconnectTimer = null;
+
+    /**
+     * 建立 WebSocket 連線並註冊事件處理器
+     */
+    function connect() {
+      // 清除之前的重連計時器
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+
+      ws = new WebSocket(WS_URL);
+
+      // -- 連線成功 --
+      ws.onopen = function () {
+        console.log('[WS] Connected to', WS_URL);
+        document.getElementById('ws-status').textContent = 'Connected';
+        document.getElementById('ws-status').className = 'value';
+        document.getElementById('status-dot').className = 'connected';
+      };
+
+      // -- 收到訊息 --
+      ws.onmessage = function (event) {
+        try {
+          var data = JSON.parse(event.data);
+
+          // 區分兩種封包類型：
+          // 1. 完整狀態封包 (含 ai_analysis, location, timestamp)
+          // 2. movement 封包 (type === 'movement')
+          if (data.type === 'movement') {
+            // movement 封包 - 可直接用於輕量 UI 更新
+            console.log('[WS] Movement:', data.score, 'isMotion:', data.isMotion);
+            return;
+          }
+
+          // 完整狀態封包 - 更新所有 UI 欄位
+          document.getElementById('score').textContent = data.ai_analysis.movement_score;
+          document.getElementById('falling').textContent = data.ai_analysis.is_falling ? 'YES' : 'No';
+          document.getElementById('falling').className = data.ai_analysis.is_falling ? 'falling' : 'value';
+          document.getElementById('loc-x').textContent = data.location.raw_x !== null ? data.location.raw_x : 'N/A';
+          document.getElementById('loc-y').textContent = data.location.raw_y !== null ? data.location.raw_y : 'N/A';
+          document.getElementById('timestamp').textContent = data.timestamp;
+
+          // 顯示原始 JSON
+          document.getElementById('raw-json').textContent = JSON.stringify(data, null, 2);
+
+        } catch (err) {
+          console.error('[WS] Parse error:', err);
+        }
+      };
+
+      // -- 連線關閉：3 秒後自動重連 --
+      ws.onclose = function () {
+        console.log('[WS] Disconnected. Reconnecting in 3s...');
+        document.getElementById('ws-status').textContent = 'Disconnected (reconnecting...)';
+        document.getElementById('ws-status').className = 'offline';
+        document.getElementById('status-dot').className = 'disconnected';
+        reconnectTimer = setTimeout(connect, 3000);
+      };
+
+      // -- 連線錯誤 --
+      ws.onerror = function (err) {
+        console.error('[WS] Error:', err);
+      };
+    }
+
+    // 啟動連線
+    connect();
+  </script>
+</body>
+</html>

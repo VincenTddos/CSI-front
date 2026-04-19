@@ -23,6 +23,27 @@ export interface MovementData {
   isMotion: boolean; // 是否偵測到活動
 }
 
+// 來自 core_bridge.py 的完整狀態封包
+export interface CoreBridgePacket {
+  status: 'online' | 'offline';
+  ai_analysis: {
+    is_falling: boolean;
+    movement_score: number;
+  };
+  location: {
+    raw_x: number | null;
+    raw_y: number | null;
+  };
+  timestamp: string; // ISO8601
+}
+
+// Wi-Fi 三角定位座標
+export interface LocationData {
+  x: number | null;
+  y: number | null;
+  timestamp: string;
+}
+
 export interface Patient {
   id: string;
   name: string;

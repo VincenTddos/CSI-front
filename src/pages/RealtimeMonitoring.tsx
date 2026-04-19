@@ -21,12 +21,19 @@ import {
   Download,
   Calendar,
   Clock,
-  X
+  X,
+  Wifi,
+  WifiOff,
+  LayoutGrid
 } from 'lucide-react';
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { useDeveloper } from '../contexts/DeveloperContext';
 import { useUser } from '../contexts/UserContext';
+import { useCSIWebSocket } from '../hooks/useCSIWebSocket';
 import { cn } from '../lib/utils';
+import { RoomGrid, RoomStatus } from '../components/RoomGrid';
+import { RoomDetailPanel } from '../components/RoomDetailPanel';
+import { mockPatients } from '../lib/mockData';
 
 // Simulate CSI waveform data
 const generateData = (time: number, isFall: boolean, sensitivity: number = 0.5) => {
@@ -66,7 +73,12 @@ export function RealtimeMonitoring() {
   const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
   const [movementScore, setMovementScore] = useState(12);
   const [harActivity, setHarActivity] = useState<{ label: string; confidence: number; icon: string }>({ label: '靜坐', confidence: 88, icon: '🪑' });
+  const [rightTab, setRightTab] = useState<'floorplan' | 'rooms'>('floorplan');
+  const [selectedRoom, setSelectedRoom] = useState<RoomStatus | null>(null);
   const { isDeveloperMode, manualState, sensitivity, sceneMode } = useDeveloper();
+
+  // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
+  const { isConnected, bridgeStatus, locationData } = useCSIWebSocket();
 
   const areas = user?.role === 'family' 
     ? [`${user.patientName} 的房間`] 
@@ -159,25 +171,32 @@ export function RealtimeMonitoring() {
     return () => clearInterval(interval);
   }, [isFallDetected, isDeveloperMode, manualState, sensitivity]);
 
-  // Update movement score and HAR based on state
+  // 將 core_bridge.py 的即時數據同步到 UI 狀態
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (isFallDetected) {
-        setMovementScore(65 + Math.round(Math.random() * 30));
-        setHarActivity({ label: '跌倒風險', confidence: 88 + Math.round(Math.random() * 10), icon: '⚠️' });
-      } else {
-        const score = 5 + Math.round(Math.random() * 20);
-        setMovementScore(score);
-        const activities = [
-          { label: '靜坐', confidence: 85 + Math.round(Math.random() * 12), icon: '🪑' },
-          { label: '行走', confidence: 70 + Math.round(Math.random() * 20), icon: '🚶' },
-          { label: '睡眠', confidence: 80 + Math.round(Math.random() * 15), icon: '😴' },
-        ];
-        setHarActivity(activities[Math.floor(Math.random() * activities.length)]);
-      }
-    }, 2500);
-    return () => clearInterval(interval);
-  }, [isFallDetected]);
+    if (!bridgeStatus) return;
+
+    // 更新移動分數
+    const score = bridgeStatus.ai_analysis.movement_score;
+    setMovementScore(Math.round(score));
+
+    // 更新跌倒偵測
+    if (bridgeStatus.ai_analysis.is_falling && !isFallDetected) {
+      setIsFallDetected(true);
+    } else if (!bridgeStatus.ai_analysis.is_falling && isFallDetected) {
+      setIsFallDetected(false);
+    }
+
+    // 根據分數更新 HAR 活動辨識
+    if (bridgeStatus.ai_analysis.is_falling) {
+      setHarActivity({ label: '跌倒風險', confidence: 88 + Math.round(Math.random() * 10), icon: '⚠️' });
+    } else if (score > 20) {
+      setHarActivity({ label: '行走', confidence: 70 + Math.round(Math.random() * 20), icon: '🚶' });
+    } else if (score > 5) {
+      setHarActivity({ label: '靜坐', confidence: 85 + Math.round(Math.random() * 12), icon: '🪑' });
+    } else {
+      setHarActivity({ label: '睡眠', confidence: 80 + Math.round(Math.random() * 15), icon: '😴' });
+    }
+  }, [bridgeStatus]);
 
   // Auto-show AI popup when fall is detected
   useEffect(() => {
@@ -335,12 +354,24 @@ export function RealtimeMonitoring() {
           {/* Top Info Cards */}
           <div className="grid grid-cols-2 gap-6">
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 flex items-center gap-4">
-              <div className="w-12 h-12 rounded-full bg-[#34C759]/10 flex items-center justify-center shrink-0">
-                <CheckCircle2 className="w-6 h-6 text-[#34C759]" />
+              <div className={cn(
+                "w-12 h-12 rounded-full flex items-center justify-center shrink-0",
+                isConnected ? "bg-[#34C759]/10" : "bg-red-50"
+              )}>
+                {isConnected ? (
+                  <CheckCircle2 className="w-6 h-6 text-[#34C759]" />
+                ) : (
+                  <WifiOff className="w-6 h-6 text-red-400" />
+                )}
               </div>
               <div>
                 <p className="text-sm text-slate-500 font-medium">設備狀態</p>
-                <h3 className="text-lg font-bold text-slate-800">連線成功</h3>
+                <h3 className={cn(
+                  "text-lg font-bold",
+                  isConnected ? "text-slate-800" : "text-red-500"
+                )}>
+                  {isConnected ? '連線成功' : '已斷線'}
+                </h3>
               </div>
             </div>
             
@@ -584,131 +615,215 @@ export function RealtimeMonitoring() {
           )}
         </div>
 
-        {/* Right Column: Floor Plan */}
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 flex flex-col relative">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-              <MapPin className="w-5 h-5 text-[#2C363F]" />
-              區域平面圖
-            </h2>
-            <span className="text-xs font-medium bg-slate-100 text-slate-600 px-2 py-1 rounded">{selectedArea}</span>
+        {/* Right Column: Floor Plan + Room Overview (Tabbed) */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 flex flex-col relative">
+          {/* Tab Header */}
+          <div className="flex items-center gap-1 mb-4 bg-slate-100 rounded-xl p-1 shrink-0">
+            <button
+              onClick={() => { setRightTab('floorplan'); setSelectedRoom(null); }}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all",
+                rightTab === 'floorplan'
+                  ? "bg-white text-slate-800 shadow-sm"
+                  : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <MapPin className="w-3.5 h-3.5" />
+              平面圖
+            </button>
+            <button
+              onClick={() => { setRightTab('rooms'); setSelectedRoom(null); }}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all",
+                rightTab === 'rooms'
+                  ? "bg-white text-slate-800 shadow-sm"
+                  : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              病房總覽
+            </button>
           </div>
 
-          <div className="flex-1 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 relative overflow-hidden p-4 flex items-center justify-center">
-            {/* Minimalist Floor Plan SVG Representation */}
-            <div className="w-full aspect-square max-w-sm relative border-4 border-slate-300 rounded-lg bg-white shadow-inner">
-              {selectedArea === '公共區域' ? (
-                <>
-                  {/* Tables and Chairs for Public Area */}
-                  <div className="absolute top-8 left-8 w-20 h-20 border-2 border-slate-300 rounded-full bg-slate-100 flex items-center justify-center">
-                    <span className="text-[10px] text-slate-400 font-medium">圓桌</span>
-                  </div>
-                  <div className="absolute top-8 right-8 w-20 h-20 border-2 border-slate-300 rounded-full bg-slate-100 flex items-center justify-center">
-                    <span className="text-[10px] text-slate-400 font-medium">圓桌</span>
-                  </div>
-                  <div className="absolute bottom-12 left-1/2 -translate-x-1/2 w-48 h-12 border-2 border-slate-300 rounded bg-slate-100 flex items-center justify-center">
-                    <span className="text-[10px] text-slate-400 font-medium">長沙發區</span>
-                  </div>
-                </>
-              ) : selectedArea === '浴室' ? (
-                <>
-                  {/* Dedicated Bathroom Layout */}
-                  <div className="absolute top-4 right-4 w-24 h-24 border-2 border-slate-300 rounded-bl-3xl bg-slate-100 flex items-center justify-center">
-                    <span className="text-[10px] text-slate-400 font-medium">浴缸</span>
-                  </div>
-                  <div className="absolute bottom-4 left-4 w-16 h-16 border-2 border-slate-300 rounded-full bg-slate-100 flex items-center justify-center">
-                    <span className="text-[10px] text-slate-400 font-medium">洗手台</span>
-                  </div>
-                  <div className="absolute top-4 left-4 w-12 h-16 border-2 border-slate-300 rounded bg-slate-100 flex items-center justify-center">
-                    <span className="text-[10px] text-slate-400 font-medium">馬桶</span>
-                  </div>
-                </>
-              ) : (
-                <>
-                  {/* Default Room Layout */}
-                  <div className="absolute top-4 right-4 w-24 h-32 border-2 border-slate-300 rounded bg-slate-100 flex items-center justify-center">
-                    <span className="text-xs text-slate-400 font-medium">病床</span>
-                  </div>
-                  
-                  {/* Bathroom - Interactive Area */}
-                  <button 
-                    onClick={() => isFallDetected && setShowAiPopup(true)}
-                    className={cn(
-                      "absolute top-0 left-0 w-32 h-32 border-r-2 border-b-2 border-slate-300 flex items-center justify-center transition-all duration-500 group overflow-hidden",
-                      isFallDetected 
-                        ? "bg-red-500/20 border-red-500/50 shadow-[inset_0_0_20px_rgba(239,68,68,0.2)]" 
-                        : "bg-blue-50/30 hover:bg-blue-100/50"
+          {/* Tab Content */}
+          <div className="flex-1 relative min-h-0">
+            {rightTab === 'floorplan' ? (
+              /* ====== Original Floor Plan (UNCHANGED) ====== */
+              <>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                    <MapPin className="w-4 h-4 text-[#2C363F]" />
+                    區域平面圖
+                  </h2>
+                  <span className="text-[10px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{selectedArea}</span>
+                </div>
+
+                <div className="flex-1 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 relative overflow-hidden p-4 flex items-center justify-center">
+                  {/* Minimalist Floor Plan SVG Representation */}
+                  <div className="w-full aspect-square max-w-sm relative border-4 border-slate-300 rounded-lg bg-white shadow-inner">
+                    {selectedArea === '公共區域' ? (
+                      <>
+                        {/* Tables and Chairs for Public Area */}
+                        <div className="absolute top-8 left-8 w-20 h-20 border-2 border-slate-300 rounded-full bg-slate-100 flex items-center justify-center">
+                          <span className="text-[10px] text-slate-400 font-medium">圓桌</span>
+                        </div>
+                        <div className="absolute top-8 right-8 w-20 h-20 border-2 border-slate-300 rounded-full bg-slate-100 flex items-center justify-center">
+                          <span className="text-[10px] text-slate-400 font-medium">圓桌</span>
+                        </div>
+                        <div className="absolute bottom-12 left-1/2 -translate-x-1/2 w-48 h-12 border-2 border-slate-300 rounded bg-slate-100 flex items-center justify-center">
+                          <span className="text-[10px] text-slate-400 font-medium">長沙發區</span>
+                        </div>
+                      </>
+                    ) : selectedArea === '浴室' ? (
+                      <>
+                        {/* Dedicated Bathroom Layout */}
+                        <div className="absolute top-4 right-4 w-24 h-24 border-2 border-slate-300 rounded-bl-3xl bg-slate-100 flex items-center justify-center">
+                          <span className="text-[10px] text-slate-400 font-medium">浴缸</span>
+                        </div>
+                        <div className="absolute bottom-4 left-4 w-16 h-16 border-2 border-slate-300 rounded-full bg-slate-100 flex items-center justify-center">
+                          <span className="text-[10px] text-slate-400 font-medium">洗手台</span>
+                        </div>
+                        <div className="absolute top-4 left-4 w-12 h-16 border-2 border-slate-300 rounded bg-slate-100 flex items-center justify-center">
+                          <span className="text-[10px] text-slate-400 font-medium">馬桶</span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        {/* Default Room Layout */}
+                        <div className="absolute top-4 right-4 w-24 h-32 border-2 border-slate-300 rounded bg-slate-100 flex items-center justify-center">
+                          <span className="text-xs text-slate-400 font-medium">病床</span>
+                        </div>
+                        
+                        {/* Bathroom - Interactive Area */}
+                        <button 
+                          onClick={() => isFallDetected && setShowAiPopup(true)}
+                          className={cn(
+                            "absolute top-0 left-0 w-32 h-32 border-r-2 border-b-2 border-slate-300 flex items-center justify-center transition-all duration-500 group overflow-hidden",
+                            isFallDetected 
+                              ? "bg-red-500/20 border-red-500/50 shadow-[inset_0_0_20px_rgba(239,68,68,0.2)]" 
+                              : "bg-blue-50/30 hover:bg-blue-100/50"
+                          )}
+                        >
+                          <span className={cn(
+                            "text-xs font-bold transition-colors",
+                            isFallDetected ? "text-red-600" : "text-slate-400"
+                          )}>浴室</span>
+                          {isFallDetected && (
+                            <div className="absolute inset-0 bg-red-500/10 animate-pulse pointer-events-none" />
+                          )}
+                          <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-400/5 to-transparent h-1/2 w-full animate-scan pointer-events-none" />
+                        </button>
+
+                        <div className="absolute bottom-12 right-8 w-12 h-12 border-2 border-slate-300 rounded-full bg-slate-50" />
+                      </>
                     )}
-                  >
-                    <span className={cn(
-                      "text-xs font-bold transition-colors",
-                      isFallDetected ? "text-red-600" : "text-slate-400"
-                    )}>浴室</span>
+
+                    {/* Door */}
+                    <div className="absolute bottom-0 left-8 w-16 h-2 bg-white border-x-2 border-slate-300" />
+
+                    {/* CSI Sensor Location */}
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 opacity-40">
+                      <div className="w-4 h-4 bg-[#007AFF] rounded-sm rotate-45 flex items-center justify-center">
+                        <Activity className="w-2 h-2 text-white -rotate-45" />
+                      </div>
+                      <span className="text-[8px] font-bold text-[#007AFF] uppercase tracking-tighter">CSI Sensor</span>
+                    </div>
+
+                    {/* Wi-Fi Triangulation Person Location Dot */}
+                    {locationData.x !== null && locationData.y !== null && (() => {
+                      const roomWidth = 6.0;
+                      const roomHeight = 5.0;
+                      const pctX = Math.max(0, Math.min(100, (locationData.x / roomWidth) * 100));
+                      const pctY = Math.max(0, Math.min(100, (locationData.y / roomHeight) * 100));
+                      return (
+                        <div
+                          className="absolute z-10 transition-all duration-1000 ease-in-out"
+                          style={{ left: `${pctX}%`, top: `${pctY}%`, transform: 'translate(-50%, -50%)' }}
+                        >
+                          <div className="w-5 h-5 bg-[#34C759] rounded-full border-2 border-white shadow-lg relative z-10 flex items-center justify-center">
+                            <User className="w-2.5 h-2.5 text-white" />
+                          </div>
+                          <div className="absolute inset-[-4px] bg-[#34C759]/30 rounded-full animate-ping" />
+                          <div className="absolute inset-[-8px] bg-[#34C759]/10 rounded-full animate-pulse" />
+                          <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap">
+                            <span className="text-[7px] font-mono font-bold text-[#34C759] bg-white/80 px-1 rounded">
+                              ({locationData.x?.toFixed(1)}, {locationData.y?.toFixed(1)})
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Dynamic Fall Marker */}
                     {isFallDetected && (
-                      <div className="absolute inset-0 bg-red-500/10 animate-pulse pointer-events-none" />
+                      <div className={cn(
+                        "absolute z-20 pointer-events-none",
+                        selectedArea === '公共區域' ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" :
+                        selectedArea === '浴室' ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" :
+                        "top-16 left-16 -translate-x-1/2 -translate-y-1/2"
+                      )}>
+                        <div className="w-6 h-6 bg-[#FF3B30] rounded-full relative z-10 shadow-lg border-2 border-white flex items-center justify-center">
+                          <AlertTriangle className="w-3 h-3 text-white" />
+                        </div>
+                        <div className="absolute inset-0 bg-[#FF3B30] rounded-full animate-ping opacity-75" />
+                        <div className="absolute inset-[-12px] bg-[#FF3B30]/20 rounded-full animate-pulse" />
+                      </div>
                     )}
-                    <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-400/5 to-transparent h-1/2 w-full animate-scan pointer-events-none" />
-                  </button>
-
-                  <div className="absolute bottom-12 right-8 w-12 h-12 border-2 border-slate-300 rounded-full bg-slate-50" />
-                </>
-              )}
-
-              {/* Door */}
-              <div className="absolute bottom-0 left-8 w-16 h-2 bg-white border-x-2 border-slate-300" />
-
-              {/* CSI Sensor Location */}
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 opacity-40">
-                <div className="w-4 h-4 bg-[#007AFF] rounded-sm rotate-45 flex items-center justify-center">
-                  <Activity className="w-2 h-2 text-white -rotate-45" />
-                </div>
-                <span className="text-[8px] font-bold text-[#007AFF] uppercase tracking-tighter">CSI Sensor</span>
-              </div>
-
-              {/* Dynamic Fall Marker */}
-              {isFallDetected && (
-                <div className={cn(
-                  "absolute z-20 pointer-events-none",
-                  selectedArea === '公共區域' ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" :
-                  selectedArea === '浴室' ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" :
-                  "top-16 left-16 -translate-x-1/2 -translate-y-1/2"
-                )}>
-                  <div className="w-6 h-6 bg-[#FF3B30] rounded-full relative z-10 shadow-lg border-2 border-white flex items-center justify-center">
-                    <AlertTriangle className="w-3 h-3 text-white" />
                   </div>
-                  <div className="absolute inset-0 bg-[#FF3B30] rounded-full animate-ping opacity-75" />
-                  <div className="absolute inset-[-12px] bg-[#FF3B30]/20 rounded-full animate-pulse" />
-                </div>
-              )}
-            </div>
 
-            {/* AI Analysis Popup */}
-            {showAiPopup && isFallDetected && (
-              <div className="absolute inset-x-4 bottom-4 bg-white rounded-xl shadow-2xl border border-red-100 p-4 z-30 animate-in slide-in-from-bottom-4">
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2 text-[#FF3B30] font-bold text-sm">
-                    <Info className="w-4 h-4" />
-                    Gemini AI 初步判斷
-                  </div>
-                  <button 
-                    onClick={() => setShowAiPopup(false)}
-                    className="text-slate-400 hover:text-slate-600 text-xs"
-                  >
-                    關閉
-                  </button>
+                  {/* AI Analysis Popup */}
+                  {showAiPopup && isFallDetected && (
+                    <div className="absolute inset-x-4 bottom-4 bg-white rounded-xl shadow-2xl border border-red-100 p-4 z-30 animate-in slide-in-from-bottom-4">
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-2 text-[#FF3B30] font-bold text-sm">
+                          <Info className="w-4 h-4" />
+                          Gemini AI 初步判斷
+                        </div>
+                        <button 
+                          onClick={() => setShowAiPopup(false)}
+                          className="text-slate-400 hover:text-slate-600 text-xs"
+                        >
+                          關閉
+                        </button>
+                      </div>
+                      <p className="text-sm text-slate-700 leading-relaxed font-medium">
+                        11:42 AM - 浴室偵測到劇烈訊號變化，與跌倒特徵吻合度 <span className="text-[#FF3B30] font-bold text-base">92%</span>，建議立即查看。
+                      </p>
+                      <div className="mt-3 flex gap-2">
+                        <button className="flex-1 bg-[#FF3B30] hover:bg-red-600 text-white text-xs font-bold py-2 rounded-lg transition-colors">
+                          立即處理
+                        </button>
+                        <button className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-2 rounded-lg transition-colors">
+                          誤報忽略
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <p className="text-sm text-slate-700 leading-relaxed font-medium">
-                  11:42 AM - 浴室偵測到劇烈訊號變化，與跌倒特徵吻合度 <span className="text-[#FF3B30] font-bold text-base">92%</span>，建議立即查看。
-                </p>
-                <div className="mt-3 flex gap-2">
-                  <button className="flex-1 bg-[#FF3B30] hover:bg-red-600 text-white text-xs font-bold py-2 rounded-lg transition-colors">
-                    立即處理
-                  </button>
-                  <button className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold py-2 rounded-lg transition-colors">
-                    誤報忽略
-                  </button>
-                </div>
+              </>
+            ) : (
+              /* ====== Room Overview Tab (NEW) ====== */
+              <div className="h-full flex flex-col">
+                <RoomGrid
+                  compact
+                  onRoomClick={(room) => setSelectedRoom(room)}
+                />
               </div>
+            )}
+
+            {/* Room Detail Slide-Over Panel */}
+            {selectedRoom && (
+              <RoomDetailPanel
+                room={selectedRoom}
+                patient={(() => {
+                  // Match room to patient by room number extracted from room name
+                  const roomNum = selectedRoom.name.match(/\d+/);
+                  if (!roomNum) return null;
+                  const patients = mockPatients;
+                  return patients.find(p => p.roomNumber === roomNum[0]) || null;
+                })()}
+                onClose={() => setSelectedRoom(null)}
+              />
             )}
           </div>
         </div>
