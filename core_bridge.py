@@ -123,7 +123,7 @@ WIFI_SCAN_ROUNDS: int = 3                # 每次定位做幾輪掃描取平均
 # -- WebSocket 設定 --
 WS_HOST: str = "0.0.0.0"
 WS_PORT: int = 8765
-WS_BROADCAST_INTERVAL: float = 1.0       # 推播頻率 (秒)
+WS_BROADCAST_INTERVAL: float = 0.1       # 推播頻率 (秒) — 10Hz
 
 # -- 跌倒偵測閾值 --
 FALL_SCORE_THRESHOLD: float = 80.0        # 移動分數超過此值視為疑似跌倒
@@ -208,17 +208,20 @@ def serial_reader_thread() -> None:
     """
     logger.info("[Serial] Thread started, target: %s @ %d baud", SERIAL_PORT, SERIAL_BAUD)
 
-    # 用正規表示式擷取分數數值
-    score_pattern = re.compile(r"Movement\s+Score:\s*([\d.]+)", re.IGNORECASE)
+    # ESPectre firmware 格式: "... | mvmt:0.6572 thr:1.0000 | IDLE | ..."
+    score_pattern = re.compile(r"\bmvmt:([\d.]+)", re.IGNORECASE)
 
     while not shutdown_event.is_set():
         ser: Optional[serial.Serial] = None
         try:
             # ---- 嘗試開啟序列埠 ---- #
+            # dsrdtr/rtscts=False 防止 CH343/CH340 晶片在連線時觸發 ESP32 重置
             ser = serial.Serial(
                 port=SERIAL_PORT,
                 baudrate=SERIAL_BAUD,
-                timeout=1.0,  # read timeout，避免永久阻塞
+                timeout=1.0,
+                dsrdtr=False,
+                rtscts=False,
             )
             state.set_serial_online(True)
             logger.info("[Serial] Connected to %s", SERIAL_PORT)
@@ -239,7 +242,8 @@ def serial_reader_thread() -> None:
                 match = score_pattern.search(line)
                 if match:
                     try:
-                        score = float(match.group(1))
+                        # ESPectre reports mvmt in 0.0-1.0+ range; scale to 0-100
+                        score = float(match.group(1)) * 100.0
                         state.set_movement_score(score)
                         logger.debug("[Serial] Movement Score = %.2f", score)
                     except ValueError:

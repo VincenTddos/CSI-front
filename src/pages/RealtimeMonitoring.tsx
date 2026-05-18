@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   LineChart, 
   Line, 
@@ -35,14 +35,14 @@ import { RoomGrid, RoomStatus } from '../components/RoomGrid';
 import { RoomDetailPanel } from '../components/RoomDetailPanel';
 import { mockPatients } from '../lib/mockData';
 
-// Simulate CSI waveform data
+// Simulate CSI waveform data (used when NOT connected to real hardware)
 const generateData = (time: number, isFall: boolean, sensitivity: number = 0.5) => {
   const base = Math.sin(time / 10) * 20;
   const noiseFactor = sensitivity * 20;
   const noise1 = (Math.random() * noiseFactor) - (noiseFactor / 2);
   const noise2 = Math.cos(time / 5) * 15;
   const noise3 = Math.sin(time / 3) * 10;
-  
+
   if (isFall) {
     return {
       time,
@@ -57,6 +57,27 @@ const generateData = (time: number, isFall: boolean, sensitivity: number = 0.5) 
     subcarrier1: base + noise1 + 50,
     subcarrier2: base + noise2 + 40,
     subcarrier3: noise3 + 60,
+  };
+};
+
+// Generate waveform data driven by real movement score from ESP32
+const generateRealData = (time: number, score: number, isFall: boolean) => {
+  if (isFall) {
+    return {
+      time,
+      subcarrier1: -80 + Math.random() * 20,
+      subcarrier2: -90 + Math.random() * 15,
+      subcarrier3: -75 + Math.random() * 25,
+    };
+  }
+  const norm = Math.min(score, 100) / 100;
+  const center = norm * 60 - 10;
+  const spread = 4 + norm * 30;
+  return {
+    time,
+    subcarrier1: center + (Math.random() - 0.5) * spread * 2,
+    subcarrier2: center * 0.85 + (Math.random() - 0.5) * spread * 1.6,
+    subcarrier3: center * 0.7 + (Math.random() - 0.5) * spread * 1.2,
   };
 };
 
@@ -79,6 +100,12 @@ export function RealtimeMonitoring() {
 
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
   const { isConnected, bridgeStatus, locationData } = useCSIWebSocket();
+
+  // Refs to access latest real-time values inside setInterval without restarting it
+  const movementScoreRef = useRef(movementScore);
+  const isFallRef = useRef(isFallDetected);
+  useEffect(() => { movementScoreRef.current = movementScore; }, [movementScore]);
+  useEffect(() => { isFallRef.current = isFallDetected; }, [isFallDetected]);
 
   const areas = user?.role === 'family' 
     ? [`${user.patientName} 的房間`] 
@@ -131,45 +158,39 @@ export function RealtimeMonitoring() {
     }
   };
 
-  // Simulate real-time data stream
+  // Real-time data stream: uses real ESP32 data when connected, simulation otherwise
   useEffect(() => {
-    let time = 0;
+    let time = 50;
     const initialData = Array.from({ length: 50 }, (_, i) => generateData(i, false, sensitivity));
     setData(initialData);
-    time = 50;
 
     const interval = setInterval(() => {
       time += 1;
-      
-      let fallEvent = false;
+
+      let newPoint: ReturnType<typeof generateData>;
 
       if (isDeveloperMode && manualState) {
-        fallEvent = manualState === 'fall';
-      } else {
-        // Simulate a fall event more frequently if sensitivity is high
-        const threshold = sensitivity > 0.8 ? 100 : 150;
-        fallEvent = time % threshold > (threshold - 20) && time % threshold < (threshold - 10);
-      }
-      
-      if (fallEvent !== isFallDetected) {
+        const fallEvent = manualState === 'fall';
         setIsFallDetected(fallEvent);
+        newPoint = generateData(time, fallEvent, sensitivity);
+      } else if (isConnected) {
+        // Real hardware: waveform amplitude driven by actual movement score from ESP32
+        newPoint = generateRealData(time, movementScoreRef.current, isFallRef.current);
+        // isFallDetected is updated by the bridgeStatus effect below
+      } else {
+        // Simulation: generate fake fall events for demo
+        const threshold = sensitivity > 0.8 ? 100 : 150;
+        const fallEvent = time % threshold > (threshold - 20) && time % threshold < (threshold - 10);
+        setIsFallDetected(fallEvent);
+        newPoint = generateData(time, fallEvent, sensitivity);
       }
 
-      setData(prev => {
-        const newData = [...prev.slice(1), generateData(time, fallEvent, sensitivity)];
-        return newData;
-      });
-
-      setFullHistory(prev => {
-        const newPoint = generateData(time, fallEvent, sensitivity);
-        const updated = [...prev, newPoint];
-        // Keep last 1000 points (approx 100 seconds)
-        return updated.slice(-1000);
-      });
+      setData(prev => [...prev.slice(1), newPoint]);
+      setFullHistory(prev => [...prev, newPoint].slice(-1000));
     }, 100);
 
     return () => clearInterval(interval);
-  }, [isFallDetected, isDeveloperMode, manualState, sensitivity]);
+  }, [isDeveloperMode, manualState, sensitivity, isConnected]);
 
   // 將 core_bridge.py 的即時數據同步到 UI 狀態
   useEffect(() => {
@@ -807,6 +828,7 @@ export function RealtimeMonitoring() {
                 <RoomGrid
                   compact
                   onRoomClick={(room) => setSelectedRoom(room)}
+                  liveScore={isConnected ? movementScore : undefined}
                 />
               </div>
             )}
