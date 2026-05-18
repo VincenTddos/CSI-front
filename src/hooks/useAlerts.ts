@@ -15,12 +15,12 @@ export interface AlertRecord {
 export type FilterType = 'all' | 'pending' | 'confirmed' | 'false_alarm';
 
 const defaultAlerts: AlertRecord[] = [
-  { id: 'a1', time: '2026/03/27 11:42', room: '606 ¸¹©Ð - ¯D«Ç', type: '¶^­Ë­·ÀI', confidence: '92%', status: 'pending' },
-  { id: 'a2', time: '2026/03/26 20:15', room: '503 ¸¹©Ð - §ÉÃä', type: '²§±`¾_Àú', confidence: '85%', status: 'confirmed' },
-  { id: 'a3', time: '2026/03/26 14:30', room: '¥æ½ËÆU', type: '¶^­Ë­·ÀI', confidence: '78%', status: 'false_alarm' },
-  { id: 'a4', time: '2026/03/25 09:00', room: '502 ¸¹©Ð - ¯D«Ç', type: '²§±`¾_Àú', confidence: '88%', status: 'confirmed' },
-  { id: 'a5', time: '2026/03/24 16:45', room: '611 ¸¹©Ð - ¨«´Y', type: '¶^­Ë­·ÀI', confidence: '71%', status: 'false_alarm' },
-  { id: 'a6', time: '2026/03/24 03:12', room: '609 ¸¹©Ð - §ÉÃä', type: '²§±`¾_Àú', confidence: '95%', status: 'pending' },
+  { id: 'a1', time: '2026/03/27 11:42', room: '606 ï¿½ï¿½ï¿½ï¿½ - ï¿½Dï¿½ï¿½', type: 'ï¿½^ï¿½Ë­ï¿½ï¿½I', confidence: '92%', status: 'pending' },
+  { id: 'a2', time: '2026/03/26 20:15', room: '503 ï¿½ï¿½ï¿½ï¿½ - ï¿½ï¿½ï¿½ï¿½', type: 'ï¿½ï¿½ï¿½`ï¿½_ï¿½ï¿½', confidence: '85%', status: 'confirmed' },
+  { id: 'a3', time: '2026/03/26 14:30', room: 'ï¿½ï¿½ï¿½ï¿½U', type: 'ï¿½^ï¿½Ë­ï¿½ï¿½I', confidence: '78%', status: 'false_alarm' },
+  { id: 'a4', time: '2026/03/25 09:00', room: '502 ï¿½ï¿½ï¿½ï¿½ - ï¿½Dï¿½ï¿½', type: 'ï¿½ï¿½ï¿½`ï¿½_ï¿½ï¿½', confidence: '88%', status: 'confirmed' },
+  { id: 'a5', time: '2026/03/24 16:45', room: '611 ï¿½ï¿½ï¿½ï¿½ - ï¿½ï¿½ï¿½Y', type: 'ï¿½^ï¿½Ë­ï¿½ï¿½I', confidence: '71%', status: 'false_alarm' },
+  { id: 'a6', time: '2026/03/24 03:12', room: '609 ï¿½ï¿½ï¿½ï¿½ - ï¿½ï¿½ï¿½ï¿½', type: 'ï¿½ï¿½ï¿½`ï¿½_ï¿½ï¿½', confidence: '95%', status: 'pending' },
 ];
 
 function loadAlerts(): AlertRecord[] {
@@ -62,7 +62,7 @@ export function useAlerts() {
   const handleAddAlert = (alertData: { room: string, type: string, confidence: string }) => {
     if (!alertData.room.trim()) return;
     const now = new Date();
-    const timeStr = \\/\/\ \:\\;
+    const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
     const alert: AlertRecord = {
       id: 'a' + Date.now().toString(36),
       time: timeStr,

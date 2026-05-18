@@ -34,14 +34,18 @@ interface RoomGridProps {
   compact?: boolean;
   /** Callback when a room card is clicked */
   onRoomClick?: (room: RoomStatus) => void;
+  /** Real movement score from ESP32 WebSocket (when defined, stops random simulation) */
+  liveScore?: number;
 }
 
-export function RoomGrid({ compact = false, onRoomClick }: RoomGridProps) {
+export function RoomGrid({ compact = false, onRoomClick, liveScore }: RoomGridProps) {
   const [rooms, setRooms] = useState(generateRooms);
   const [filterFloor, setFilterFloor] = useState<'all' | '5F' | '6F'>('all');
+  const isLive = liveScore !== undefined;
 
-  // Simulate movement score updates
+  // Random simulation - only runs when NOT connected to real hardware
   useEffect(() => {
+    if (isLive) return;
     const interval = setInterval(() => {
       setRooms(prev => prev.map(r => {
         const delta = (Math.random() - 0.5) * 10;
@@ -54,7 +58,19 @@ export function RoomGrid({ compact = false, onRoomClick }: RoomGridProps) {
       }));
     }, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isLive]);
+
+  // Update the primary sensor room (r502) with real ESP32 data
+  useEffect(() => {
+    if (!isLive || liveScore === undefined) return;
+    const score = Math.round(liveScore);
+    const newStatus: RoomStatus['status'] = score > 15 ? 'motion' : score > 2 ? 'idle' : 'empty';
+    setRooms(prev => prev.map(r =>
+      r.id === 'r502'
+        ? { ...r, movementScore: score, status: newStatus, lastActivity: newStatus === 'motion' ? '剛剛' : r.lastActivity }
+        : r
+    ));
+  }, [liveScore, isLive]);
 
   const filtered = rooms.filter(r => filterFloor === 'all' || r.floor === filterFloor);
   const motionCount = rooms.filter(r => r.status === 'motion').length;
@@ -130,6 +146,9 @@ export function RoomGrid({ compact = false, onRoomClick }: RoomGridProps) {
                     <div className="flex items-center gap-1">
                       <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", cfg.dotColor, room.status === 'motion' && "animate-pulse")} />
                       <span className="text-[11px] font-bold text-slate-800 tracking-tight">{roomNum}</span>
+                      {isLive && room.id === 'r502' && (
+                        <span className="text-[7px] font-bold bg-[#007AFF] text-white px-1 py-0.5 rounded animate-pulse">LIVE</span>
+                      )}
                     </div>
                     <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded-md", cfg.textColor,
                       room.status === 'motion' ? "bg-green-100" : room.status === 'idle' ? "bg-blue-100/60" : "bg-slate-100"
@@ -219,6 +238,9 @@ export function RoomGrid({ compact = false, onRoomClick }: RoomGridProps) {
                     <div className={cn("w-2.5 h-2.5 rounded-full", cfg.color, room.status === 'motion' && "animate-pulse")} />
                     <h3 className="text-sm font-bold text-slate-800">{room.name}</h3>
                     <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded font-medium">{room.floor}</span>
+                    {isLive && room.id === 'r502' && (
+                      <span className="text-[8px] font-bold bg-[#007AFF] text-white px-1.5 py-0.5 rounded animate-pulse">LIVE</span>
+                    )}
                   </div>
                   <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full", cfg.textColor, cfg.bgColor)}>
                     <Icon className="w-3 h-3 inline mr-0.5" />{cfg.label}
