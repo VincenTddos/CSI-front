@@ -92,14 +92,18 @@ export function RealtimeMonitoring() {
   const [fullHistory, setFullHistory] = useState<any[]>([]);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
-  const [movementScore, setMovementScore] = useState(12);
-  const [harActivity, setHarActivity] = useState<{ label: string; confidence: number; icon: string }>({ label: '靜坐', confidence: 88, icon: '🪑' });
+  const [movementScore, setMovementScore] = useState(0);
+  const [harActivity, setHarActivity] = useState<{ label: string; confidence: number; icon: string }>({ label: '待機', confidence: 0, icon: '⏸️' });
   const [rightTab, setRightTab] = useState<'floorplan' | 'rooms'>('floorplan');
   const [selectedRoom, setSelectedRoom] = useState<RoomStatus | null>(null);
+  const [isSimulating, setIsSimulating] = useState(false);
   const { isDeveloperMode, manualState, sensitivity, sceneMode } = useDeveloper();
 
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
   const { isConnected, bridgeStatus, locationData } = useCSIWebSocket();
+
+  // isConnected = WebSocket 到 bridge 通了；isHardwareOnline = ESP32 板子實際有插著
+  const isHardwareOnline = isConnected && bridgeStatus?.status === 'online';
 
   // Refs to access latest real-time values inside setInterval without restarting it
   const movementScoreRef = useRef(movementScore);
@@ -158,31 +162,33 @@ export function RealtimeMonitoring() {
     }
   };
 
-  // Real-time data stream: uses real ESP32 data when connected, simulation otherwise
+  // Real-time data stream
   useEffect(() => {
     let time = 50;
-    const initialData = Array.from({ length: 50 }, (_, i) => generateData(i, false, sensitivity));
-    setData(initialData);
+    const flat = Array.from({ length: 50 }, (_, i) => ({ time: i, subcarrier1: 0, subcarrier2: 0, subcarrier3: 0 }));
+    setData(flat);
 
     const interval = setInterval(() => {
       time += 1;
-
-      let newPoint: ReturnType<typeof generateData>;
+      let newPoint: { time: number; subcarrier1: number; subcarrier2: number; subcarrier3: number };
 
       if (isDeveloperMode && manualState) {
         const fallEvent = manualState === 'fall';
         setIsFallDetected(fallEvent);
         newPoint = generateData(time, fallEvent, sensitivity);
-      } else if (isConnected) {
-        // Real hardware: waveform amplitude driven by actual movement score from ESP32
+      } else if (isHardwareOnline) {
+        // 板子插著：用真實 movement score 驅動波形
         newPoint = generateRealData(time, movementScoreRef.current, isFallRef.current);
-        // isFallDetected is updated by the bridgeStatus effect below
-      } else {
-        // Simulation: generate fake fall events for demo
+      } else if (isSimulating) {
+        // 手動開啟模擬模式
         const threshold = sensitivity > 0.8 ? 100 : 150;
         const fallEvent = time % threshold > (threshold - 20) && time % threshold < (threshold - 10);
         setIsFallDetected(fallEvent);
         newPoint = generateData(time, fallEvent, sensitivity);
+      } else {
+        // 沒插板子、也沒開模擬 → 平線、無數據
+        setIsFallDetected(false);
+        newPoint = { time, subcarrier1: 0, subcarrier2: 0, subcarrier3: 0 };
       }
 
       setData(prev => [...prev.slice(1), newPoint]);
@@ -190,22 +196,28 @@ export function RealtimeMonitoring() {
     }, 100);
 
     return () => clearInterval(interval);
-  }, [isDeveloperMode, manualState, sensitivity, isConnected]);
+  }, [isDeveloperMode, manualState, sensitivity, isHardwareOnline, isSimulating]);
 
   // 將 core_bridge.py 的即時數據同步到 UI 狀態
   useEffect(() => {
     if (!bridgeStatus) return;
+
+    if (bridgeStatus.status !== 'online') {
+      // 板子拔掉或離線 → 全部歸零
+      if (!isSimulating) {
+        setMovementScore(0);
+        setIsFallDetected(false);
+        setHarActivity({ label: '待機', confidence: 0, icon: '⏸️' });
+      }
+      return;
+    }
 
     // 更新移動分數
     const score = bridgeStatus.ai_analysis.movement_score;
     setMovementScore(Math.round(score));
 
     // 更新跌倒偵測
-    if (bridgeStatus.ai_analysis.is_falling && !isFallDetected) {
-      setIsFallDetected(true);
-    } else if (!bridgeStatus.ai_analysis.is_falling && isFallDetected) {
-      setIsFallDetected(false);
-    }
+    setIsFallDetected(bridgeStatus.ai_analysis.is_falling);
 
     // 根據分數更新 HAR 活動辨識
     if (bridgeStatus.ai_analysis.is_falling) {
@@ -217,7 +229,7 @@ export function RealtimeMonitoring() {
     } else {
       setHarActivity({ label: '睡眠', confidence: 80 + Math.round(Math.random() * 15), icon: '😴' });
     }
-  }, [bridgeStatus]);
+  }, [bridgeStatus, isSimulating]);
 
   // Auto-show AI popup when fall is detected
   useEffect(() => {
@@ -353,16 +365,44 @@ export function RealtimeMonitoring() {
           <p className="text-slate-500 text-sm mt-1">CSI 頻譜感測與 AI 空間分析</p>
         </div>
         <div className="flex items-center gap-3">
-          <button 
+          <button
             onClick={() => setShowExportModal(true)}
             className="flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg shadow-sm border border-slate-100 transition-all active:scale-95"
           >
             <Download className="w-4 h-4 text-[#007AFF]" />
             <span className="text-sm font-medium">匯出數據</span>
           </button>
-          <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-lg shadow-sm border border-slate-100">
-            <div className="w-2 h-2 rounded-full bg-[#34C759] animate-pulse" />
-            <span className="text-sm font-medium text-slate-600">系統運作中</span>
+          {/* 模擬模式切換按鈕（板子未插時才顯示，或已開啟時顯示）*/}
+          {(!isHardwareOnline || isSimulating) && (
+            <button
+              onClick={() => {
+                setIsSimulating(v => !v);
+                setIsFallDetected(false);
+                setMovementScore(0);
+                setHarActivity({ label: '待機', confidence: 0, icon: '⏸️' });
+              }}
+              className={cn(
+                "flex items-center gap-2 px-4 py-2 rounded-lg shadow-sm border text-sm font-medium transition-all active:scale-95",
+                isSimulating
+                  ? "bg-amber-50 border-amber-300 text-amber-700 hover:bg-amber-100"
+                  : "bg-white border-slate-200 text-slate-500 hover:bg-slate-50"
+              )}
+            >
+              <div className={cn("w-2 h-2 rounded-full", isSimulating ? "bg-amber-400 animate-pulse" : "bg-slate-300")} />
+              {isSimulating ? '模擬模式（關閉）' : '模擬模式'}
+            </button>
+          )}
+          <div className={cn(
+            "flex items-center gap-2 px-4 py-2 rounded-lg shadow-sm border",
+            isHardwareOnline ? "bg-white border-slate-100" : isSimulating ? "bg-amber-50 border-amber-200" : "bg-slate-50 border-slate-200"
+          )}>
+            <div className={cn(
+              "w-2 h-2 rounded-full",
+              isHardwareOnline ? "bg-[#34C759] animate-pulse" : isSimulating ? "bg-amber-400 animate-pulse" : "bg-slate-300"
+            )} />
+            <span className="text-sm font-medium text-slate-600">
+              {isHardwareOnline ? '系統運作中' : isSimulating ? '模擬模式中' : '無訊號'}
+            </span>
           </div>
         </div>
       </div>
@@ -377,9 +417,9 @@ export function RealtimeMonitoring() {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 flex items-center gap-4">
               <div className={cn(
                 "w-12 h-12 rounded-full flex items-center justify-center shrink-0",
-                isConnected ? "bg-[#34C759]/10" : "bg-red-50"
+                isHardwareOnline ? "bg-[#34C759]/10" : "bg-red-50"
               )}>
-                {isConnected ? (
+                {isHardwareOnline ? (
                   <CheckCircle2 className="w-6 h-6 text-[#34C759]" />
                 ) : (
                   <WifiOff className="w-6 h-6 text-red-400" />
@@ -389,9 +429,9 @@ export function RealtimeMonitoring() {
                 <p className="text-sm text-slate-500 font-medium">設備狀態</p>
                 <h3 className={cn(
                   "text-lg font-bold",
-                  isConnected ? "text-slate-800" : "text-red-500"
+                  isHardwareOnline ? "text-slate-800" : "text-red-500"
                 )}>
-                  {isConnected ? '連線成功' : '已斷線'}
+                  {isHardwareOnline ? '連線成功' : isConnected ? '板子未插上' : '已斷線'}
                 </h3>
               </div>
             </div>
@@ -828,7 +868,7 @@ export function RealtimeMonitoring() {
                 <RoomGrid
                   compact
                   onRoomClick={(room) => setSelectedRoom(room)}
-                  liveScore={isConnected ? movementScore : undefined}
+                  liveScore={isHardwareOnline ? movementScore : undefined}
                 />
               </div>
             )}
