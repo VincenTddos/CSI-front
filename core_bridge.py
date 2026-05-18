@@ -126,7 +126,9 @@ WS_PORT: int = 8765
 WS_BROADCAST_INTERVAL: float = 0.1       # 推播頻率 (秒) — 10Hz
 
 # -- 跌倒偵測閾值 --
-FALL_SCORE_THRESHOLD: float = 80.0        # 移動分數超過此值視為疑似跌倒
+# ESPectre mvmt 值域：靜止 ~0.03-0.06，揮手 ~0.3-0.65，跌倒預期 > 0.7
+# 乘以 100 後對應：靜止 3-6，揮手 30-65，跌倒 > 70
+FALL_SCORE_THRESHOLD: float = 60.0        # 移動分數超過此值視為疑似跌倒（對應 mvmt > 0.6）
 
 # -- 模擬模式旗標 (由命令列參數控制) --
 SIMULATE_MODE: bool = False
@@ -210,6 +212,7 @@ def serial_reader_thread() -> None:
 
     # ESPectre firmware 格式: "... | mvmt:0.6572 thr:1.0000 | IDLE | ..."
     score_pattern = re.compile(r"\bmvmt:([\d.]+)", re.IGNORECASE)
+    motion_pattern = re.compile(r"\b(MOTION|IDLE)\b")
 
     while not shutdown_event.is_set():
         ser: Optional[serial.Serial] = None
@@ -238,26 +241,26 @@ def serial_reader_thread() -> None:
                 if not line:
                     continue
 
-                # 比對 "Movement Score: XX.X" 格式
                 match = score_pattern.search(line)
                 if match:
                     try:
-                        # ESPectre reports mvmt in 0.0-1.0+ range; scale to 0-100
+                        # ESPectre mvmt 值域 0.0-1.0+，乘以 100 轉成 0-100 分
                         score = float(match.group(1)) * 100.0
                         state.set_movement_score(score)
-                        logger.debug("[Serial] Movement Score = %.2f", score)
+                        logger.debug("[Serial] mvmt=%.2f score=%.1f", float(match.group(1)), score)
                     except ValueError:
-                        logger.warning("[Serial] Cannot parse score: %s", match.group(1))
+                        logger.warning("[Serial] Cannot parse mvmt: %s", match.group(1))
                 else:
-                    # 非預期格式的行，僅在 DEBUG 等級記錄
                     logger.debug("[Serial] Unexpected data: %s", line[:120])
 
         except serial.SerialException as exc:
             state.set_serial_online(False)
+            state.set_movement_score(0.0)   # 硬體斷線 → 清零，避免前端顯示殘留數值
             logger.warning("[Serial] Port error: %s", exc)
 
         except Exception as exc:
             state.set_serial_online(False)
+            state.set_movement_score(0.0)
             logger.error("[Serial] Unexpected error: %s", exc)
 
         finally:
