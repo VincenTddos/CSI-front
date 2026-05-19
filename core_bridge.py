@@ -11,9 +11,11 @@ core_bridge.py  --  Wi-Care 智慧長照監控系統 核心整合程式 (Neural 
 啟動方式：
     python core_bridge.py              # 正常模式 (需要硬體)
     python core_bridge.py --simulate   # 模擬模式 (無硬體時開發用)
+    python core_bridge.py --ble        # BLE 模式 (無 USB 線，透過藍芽接收)
 
 依賴套件：
     pip install websockets pyserial numpy
+    pip install bleak                  # BLE 模式需要
 
 支援平台：Windows / macOS / Linux
 作者：Wi-Care Team
@@ -45,6 +47,12 @@ try:
 except ImportError:
     print("[ERROR] pyserial: pip install pyserial")
     sys.exit(1)
+
+try:
+    from bleak import BleakScanner, BleakClient
+    BLEAK_AVAILABLE = True
+except ImportError:
+    BLEAK_AVAILABLE = False
 
 try:
     import websockets
@@ -98,6 +106,12 @@ def parse_args():
         default=8765,
         help="WebSocket server port (default: 8765)",
     )
+    parser.add_argument(
+        "--ble",
+        action="store_true",
+        default=False,
+        help="Use BLE instead of serial (requires bleak, ESPectre v2.7.0+)",
+    )
     return parser.parse_args()
 
 
@@ -125,13 +139,21 @@ WS_HOST: str = "0.0.0.0"
 WS_PORT: int = 8765
 WS_BROADCAST_INTERVAL: float = 0.1       # 推播頻率 (秒) — 10Hz
 
-# -- 跌倒偵測閾值 --
-# ESPectre mvmt 值域：靜止 ~0.03-0.06，揮手 ~0.3-0.65，跌倒預期 > 0.7
-# 乘以 100 後對應：靜止 3-6，揮手 30-65，跌倒 > 70
-FALL_SCORE_THRESHOLD: float = 60.0        # 移動分數超過此值視為疑似跌倒（對應 mvmt > 0.6）
+# -- 跌倒偵測 --
+# 使用 ESPectre 原生判斷：mvmt >= thr → MOTION（韌體自動校正環境）
+# Serial 模式解析 MOTION/IDLE；BLE 模式比較 movement vs threshold 浮點數
 
 # -- 模擬模式旗標 (由命令列參數控制) --
 SIMULATE_MODE: bool = False
+
+# -- BLE 模式旗標 (由命令列參數控制) --
+BLE_MODE: bool = False
+
+# -- ESPectre BLE GATT UUIDs (v2.7.0+) --
+BLE_SERVICE_UUID      = "d33ff46b-2203-4775-bc6f-b3a2c36af8f0"
+BLE_TELEMETRY_UUID    = "119d5cac-48da-4bd9-bfc3-169805868258"  # Notify: float32 movement + float32 threshold
+BLE_SYSINFO_UUID      = "c8c89ffa-c401-461f-9ffc-942fa04adfe3"  # Notify: key=value text
+BLE_CONTROL_UUID      = "33ed9214-a8d7-40e8-82d1-c82747dcdc71"  # Write: "SET_THRESHOLD:X.XX"
 
 
 # =========================================================================== #
@@ -157,6 +179,9 @@ class SharedState:
         # -- 子系統狀態旗標 --
         self._serial_online: bool = False
         self._wifi_online: bool = False
+
+        # -- ESPectre 原生跌倒/動作偵測結果 --
+        self._fall_detected: bool = False
 
     # ---- Movement Score ---- #
     def set_movement_score(self, score: float) -> None:
@@ -185,6 +210,14 @@ class SharedState:
     def set_wifi_online(self, status: bool) -> None:
         with self._lock:
             self._wifi_online = status
+
+    def set_fall_detected(self, detected: bool) -> None:
+        with self._lock:
+            self._fall_detected = detected
+
+    def is_falling(self) -> bool:
+        with self._lock:
+            return self._fall_detected
 
     def is_any_online(self) -> bool:
         with self._lock:
@@ -244,10 +277,15 @@ def serial_reader_thread() -> None:
                 match = score_pattern.search(line)
                 if match:
                     try:
-                        # ESPectre mvmt 值域 0.0-1.0+，乘以 100 轉成 0-100 分
                         score = float(match.group(1)) * 100.0
                         state.set_movement_score(score)
-                        logger.debug("[Serial] mvmt=%.2f score=%.1f", float(match.group(1)), score)
+                        # ESPectre 原生判斷：解析 MOTION / IDLE 字串
+                        m = motion_pattern.search(line)
+                        if m:
+                            state.set_fall_detected(m.group(1).upper() == "MOTION")
+                        logger.debug("[Serial] mvmt=%.2f score=%.1f motion=%s",
+                                     float(match.group(1)), score,
+                                     m.group(1) if m else "?")
                     except ValueError:
                         logger.warning("[Serial] Cannot parse mvmt: %s", match.group(1))
                 else:
@@ -255,12 +293,14 @@ def serial_reader_thread() -> None:
 
         except serial.SerialException as exc:
             state.set_serial_online(False)
-            state.set_movement_score(0.0)   # 硬體斷線 → 清零，避免前端顯示殘留數值
+            state.set_movement_score(0.0)
+            state.set_fall_detected(False)
             logger.warning("[Serial] Port error: %s", exc)
 
         except Exception as exc:
             state.set_serial_online(False)
             state.set_movement_score(0.0)
+            state.set_fall_detected(False)
             logger.error("[Serial] Unexpected error: %s", exc)
 
         finally:
@@ -280,6 +320,79 @@ def serial_reader_thread() -> None:
             shutdown_event.wait(timeout=SERIAL_RECONNECT_DELAY)
 
     logger.info("[Serial] Thread stopped.")
+
+
+# =========================================================================== #
+#  任務一 (BLE 版)：透過藍芽接收 ESPectre 資料 (ESPectre v2.7.0+)
+# =========================================================================== #
+
+async def _ble_reader_async() -> None:
+    """BLE 模式的非同步主迴圈，掃描並連接 ESPectre 裝置後持續接收 telemetry"""
+    import struct
+
+    def on_telemetry(sender, data: bytearray) -> None:
+        if len(data) >= 8:
+            movement  = struct.unpack_from('<f', data, 0)[0]
+            threshold = struct.unpack_from('<f', data, 4)[0]
+            score = (movement / threshold * 100.0) if threshold > 0 else 0.0
+            state.set_movement_score(score)
+            # ESPectre 原生判斷：mvmt >= thr → MOTION
+            state.set_fall_detected(movement >= threshold)
+            logger.info("[BLE] mvmt=%.4f thr=%.4f score=%.1f%% motion=%s",
+                        movement, threshold, score, movement >= threshold)
+
+    while not shutdown_event.is_set():
+        device = None
+        try:
+            logger.info("[BLE] Scanning for ESPectre (10s)...")
+            # 先用 service UUID 掃描，找不到再用裝置名稱 fallback
+            device = await BleakScanner.find_device_by_filter(
+                lambda d, adv: BLE_SERVICE_UUID.lower() in [s.lower() for s in (adv.service_uuids or [])],
+                timeout=10.0,
+            )
+            if device is None:
+                device = await BleakScanner.find_device_by_name("ESPectre", timeout=5.0)
+
+            if device is None:
+                logger.warning("[BLE] ESPectre not found, retrying in 5s...")
+                state.set_serial_online(False)
+                state.set_movement_score(0.0)
+                await asyncio.sleep(5.0)
+                continue
+
+            logger.info("[BLE] Found: %s  addr=%s", device.name, device.address)
+
+            async with BleakClient(device.address, timeout=30.0) as client:
+                state.set_serial_online(True)
+                logger.info("[BLE] Connected to %s", device.address)
+
+                await client.start_notify(BLE_TELEMETRY_UUID, on_telemetry)
+                logger.info("[BLE] Subscribed to telemetry characteristic")
+
+                while not shutdown_event.is_set() and client.is_connected:
+                    await asyncio.sleep(0.5)
+
+                try:
+                    await client.stop_notify(BLE_TELEMETRY_UUID)
+                except Exception:
+                    pass
+
+        except Exception as exc:
+            logger.warning("[BLE] Error: %s", exc)
+
+        state.set_serial_online(False)
+        state.set_movement_score(0.0)
+
+        if not shutdown_event.is_set():
+            logger.info("[BLE] Reconnecting in 5s...")
+            await asyncio.sleep(5.0)
+
+
+def ble_reader_thread() -> None:
+    """在獨立執行緒中運行 BLE 非同步讀取迴圈"""
+    logger.info("[BLE] Thread started")
+    asyncio.run(_ble_reader_async())
+    logger.info("[BLE] Thread stopped")
 
 
 # =========================================================================== #
@@ -502,7 +615,7 @@ def build_broadcast_payload() -> str:
     """
     score = state.get_movement_score()
     loc_x, loc_y = state.get_location()
-    is_falling = score > FALL_SCORE_THRESHOLD
+    is_falling = state.is_falling()  # 由各 reader 根據 ESPectre 原生判斷設定
 
     # 在模擬模式下，即使沒有硬體也顯示 online
     status = "online"
@@ -623,11 +736,12 @@ def main() -> None:
       2. WiFi Location Thread (daemon)  -- 或模擬版
       3. WebSocket Server (async main loop)
     """
-    global SERIAL_PORT, WS_PORT, SIMULATE_MODE
+    global SERIAL_PORT, WS_PORT, SIMULATE_MODE, BLE_MODE
 
     # ---- 解析命令列參數 ---- #
     args = parse_args()
     SIMULATE_MODE = args.simulate
+    BLE_MODE = args.ble
     if args.ws_port:
         WS_PORT = args.ws_port
 
@@ -637,14 +751,21 @@ def main() -> None:
     print("  Platform: %s" % platform.system())
     if SIMULATE_MODE:
         print("  ** SIMULATION MODE (no hardware required) **")
+    elif BLE_MODE:
+        print("  ** BLE MODE (ESPectre v2.7.0+, wireless) **")
     print("=" * 60)
     print()
 
-    # ---- 決定 Serial 來源 ---- #
+    # ---- 決定 Serial/BLE 來源 ---- #
     if SIMULATE_MODE:
-        # 模擬模式：使用假資料產生器
         serial_target = simulated_serial_thread
         logger.info("[Main] Using simulated serial data.")
+    elif BLE_MODE:
+        if not BLEAK_AVAILABLE:
+            logger.error("[Main] BLE mode requires bleak: pip install bleak")
+            sys.exit(1)
+        serial_target = ble_reader_thread
+        logger.info("[Main] Using BLE (ESPectre service UUID: %s)", BLE_SERVICE_UUID)
     else:
         serial_target = serial_reader_thread
         # 自動偵測序列埠
