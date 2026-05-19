@@ -231,6 +231,61 @@ state = SharedState()
 shutdown_event = threading.Event()
 
 
+class FallDetector:
+    """Conservative fall-risk detector based on movement-score spikes."""
+
+    def __init__(
+        self,
+        spike_threshold: float = 140.0,
+        delta_threshold: float = 75.0,
+        baseline_limit: float = 65.0,
+        history_size: int = 8,
+        cooldown_sec: float = 8.0,
+        hold_sec: float = 2.5,
+    ):
+        self.spike_threshold = spike_threshold
+        self.delta_threshold = delta_threshold
+        self.baseline_limit = baseline_limit
+        self.history_size = history_size
+        self.cooldown_sec = cooldown_sec
+        self.hold_sec = hold_sec
+        self._history: list[float] = []
+        self._last_trigger_at = 0.0
+        self._active_until = 0.0
+
+    def update(self, score: float, is_motion: Optional[bool] = None) -> bool:
+        now = time.monotonic()
+        if now < self._active_until:
+            self._push(score)
+            return True
+
+        recent = self._history[-self.history_size :]
+        baseline = float(np.median(recent)) if recent else score
+        sudden_spike = (
+            score >= self.spike_threshold
+            and (score - baseline) >= self.delta_threshold
+            and baseline <= self.baseline_limit
+        )
+        motion_spike = is_motion is not False and sudden_spike
+        can_trigger = (now - self._last_trigger_at) >= self.cooldown_sec
+
+        detected = motion_spike and can_trigger
+        if detected:
+            self._last_trigger_at = now
+            self._active_until = now + self.hold_sec
+
+        self._push(score)
+        return detected
+
+    def _push(self, score: float) -> None:
+        self._history.append(score)
+        if len(self._history) > self.history_size:
+            self._history = self._history[-self.history_size :]
+
+
+fall_detector = FallDetector()
+
+
 # =========================================================================== #
 #  任務一：ESP32 序列埠讀取 (在獨立 Thread 中執行)
 # =========================================================================== #
@@ -279,10 +334,11 @@ def serial_reader_thread() -> None:
                     try:
                         score = float(match.group(1)) * 100.0
                         state.set_movement_score(score)
-                        # ESPectre 原生判斷：解析 MOTION / IDLE 字串
+                        # ESPectre 的 MOTION 只代表一般活動，不等同跌倒。
+                        # 跌倒風險改由 movement score 的突發尖峰判定，避免走動就觸發警報。
                         m = motion_pattern.search(line)
-                        if m:
-                            state.set_fall_detected(m.group(1).upper() == "MOTION")
+                        is_motion = m.group(1).upper() == "MOTION" if m else None
+                        state.set_fall_detected(fall_detector.update(score, is_motion))
                         logger.debug("[Serial] mvmt=%.2f score=%.1f motion=%s",
                                      float(match.group(1)), score,
                                      m.group(1) if m else "?")
@@ -336,8 +392,8 @@ async def _ble_reader_async() -> None:
             threshold = struct.unpack_from('<f', data, 4)[0]
             score = (movement / threshold * 100.0) if threshold > 0 else 0.0
             state.set_movement_score(score)
-            # ESPectre 原生判斷：mvmt >= thr → MOTION
-            state.set_fall_detected(movement >= threshold)
+            # BLE telemetry also exposes general motion only; fall risk is a spike pattern.
+            state.set_fall_detected(fall_detector.update(score, movement >= threshold))
             logger.info("[BLE] mvmt=%.4f thr=%.4f score=%.1f%% motion=%s",
                         movement, threshold, score, movement >= threshold)
 
@@ -425,14 +481,15 @@ def simulated_serial_thread() -> None:
         noise = random.uniform(-noise_range, noise_range)
         score = max(0.0, base_score + wave + noise)
 
-        # 每隔一段時間模擬一次高分 (疑似跌倒)
+        # 每隔一段時間模擬一次明顯尖峰 (疑似跌倒)
         fall_counter += 1
         if fall_counter >= fall_interval:
-            score = random.uniform(85.0, 120.0)
+            score = random.uniform(150.0, 190.0)
             fall_counter = 0
             logger.info("[Serial-SIM] Simulated fall event! Score=%.1f", score)
 
         state.set_movement_score(round(score, 2))
+        state.set_fall_detected(fall_detector.update(score, score >= 100.0))
         logger.debug("[Serial-SIM] Score=%.2f", score)
 
         tick += 1
@@ -646,7 +703,7 @@ def build_movement_payload() -> str:
     payload = {
         "type": "movement",
         "score": round(score, 2),
-        "isMotion": score > 0.5,  # 簡易判斷：分數 > 0.5 視為有活動
+        "isMotion": score > 2.0,  # 簡易判斷：分數 > 2 視為有活動
     }
     return json.dumps(payload, ensure_ascii=False)
 
