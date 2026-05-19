@@ -40,7 +40,7 @@ export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
         if (packet.ai_analysis) {
           setMovementMetrics({
             score: packet.ai_analysis.movement_score,
-            isMotion: packet.ai_analysis.movement_score > 0.5,
+            isMotion: packet.ai_analysis.movement_score > 2,
           });
         }
 
