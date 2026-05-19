@@ -111,6 +111,38 @@ export function RealtimeMonitoring() {
   useEffect(() => { movementScoreRef.current = movementScore; }, [movementScore]);
   useEffect(() => { isFallRef.current = isFallDetected; }, [isFallDetected]);
 
+  // Rolling window for HAR pattern analysis (20 samples ≈ 2 seconds at 10Hz)
+  const scoreHistoryRef = useRef<number[]>([]);
+
+  const classifyActivity = (hist: number[], isFalling: boolean) => {
+    if (hist.length === 0) return { label: '待機', confidence: 0, icon: '⏸️' };
+    const mean = hist.reduce((a, b) => a + b, 0) / hist.length;
+    const variance = hist.reduce((a, b) => a + (b - mean) ** 2, 0) / hist.length;
+    const peak = Math.max(...hist);
+    const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+    if (isFalling) {
+      return { label: '跌倒風險', confidence: clamp(88 + Math.round((peak - 80) * 0.2), 88, 99), icon: '⚠️' };
+    }
+    if (mean > 70) {
+      // 激烈活動：持續高分（score 可超過 100）
+      return { label: '激烈活動', confidence: clamp(72 + Math.round((mean - 70) * 0.4), 72, 95), icon: '🏃' };
+    }
+    if (mean > 30 && variance > 25) {
+      // 行走：中高分 + 明顯起伏
+      return { label: '行走', confidence: clamp(65 + Math.round(variance * 0.5), 65, 93), icon: '🚶' };
+    }
+    if (mean > 12 || variance > 15) {
+      // 輕微活動
+      return { label: '輕微活動', confidence: clamp(70 + Math.round(mean * 0.8), 70, 92), icon: '💺' };
+    }
+    if (mean > 2.5) {
+      // 靜坐
+      return { label: '靜坐', confidence: clamp(78 + Math.round(mean * 2), 78, 94), icon: '🪑' };
+    }
+    return { label: '睡眠 / 靜止', confidence: clamp(82 + Math.round((2.5 - mean) * 4), 82, 96), icon: '😴' };
+  };
+
   const areas = user?.role === 'family' 
     ? [`${user.patientName} 的房間`] 
     : ['204 號房', '205 號房', '206 號房', '公共區域', '浴室'];
@@ -203,8 +235,8 @@ export function RealtimeMonitoring() {
     if (!bridgeStatus) return;
 
     if (bridgeStatus.status !== 'online') {
-      // 板子拔掉或離線 → 全部歸零
       if (!isSimulating) {
+        scoreHistoryRef.current = [];
         setMovementScore(0);
         setIsFallDetected(false);
         setHarActivity({ label: '待機', confidence: 0, icon: '⏸️' });
@@ -219,16 +251,9 @@ export function RealtimeMonitoring() {
     // 更新跌倒偵測
     setIsFallDetected(bridgeStatus.ai_analysis.is_falling);
 
-    // 根據分數更新 HAR 活動辨識
-    if (bridgeStatus.ai_analysis.is_falling) {
-      setHarActivity({ label: '跌倒風險', confidence: 88 + Math.round(Math.random() * 10), icon: '⚠️' });
-    } else if (score > 20) {
-      setHarActivity({ label: '行走', confidence: 70 + Math.round(Math.random() * 20), icon: '🚶' });
-    } else if (score > 5) {
-      setHarActivity({ label: '靜坐', confidence: 85 + Math.round(Math.random() * 12), icon: '🪑' });
-    } else {
-      setHarActivity({ label: '睡眠', confidence: 80 + Math.round(Math.random() * 15), icon: '😴' });
-    }
+    // 保留最近 20 筆 (~2秒) 做模式分析
+    scoreHistoryRef.current = [...scoreHistoryRef.current.slice(-19), score];
+    setHarActivity(classifyActivity(scoreHistoryRef.current, bridgeStatus.ai_analysis.is_falling));
   }, [bridgeStatus, isSimulating]);
 
   // Auto-show AI popup when fall is detected
@@ -469,23 +494,23 @@ export function RealtimeMonitoring() {
                 <svg className="w-16 h-16 -rotate-90" viewBox="0 0 64 64">
                   <circle cx="32" cy="32" r="28" fill="none" stroke="#f1f5f9" strokeWidth="6" />
                   <circle cx="32" cy="32" r="28" fill="none"
-                    stroke={movementScore > 50 ? '#FF3B30' : movementScore > 20 ? '#FFCC00' : '#34C759'}
+                    stroke={movementScore > 80 ? '#FF3B30' : movementScore > 40 ? '#FFCC00' : '#34C759'}
                     strokeWidth="6" strokeLinecap="round"
-                    strokeDasharray={`${movementScore * 1.76} 176`}
-                    className="transition-all duration-1000" />
+                    strokeDasharray={`${Math.min(movementScore, 100) * 1.76} 176`}
+                    className="transition-all duration-300" />
                 </svg>
-                <span className="absolute inset-0 flex items-center justify-center text-sm font-mono font-bold text-slate-800">
-                  {movementScore}
+                <span className="absolute inset-0 flex items-center justify-center text-xs font-mono font-bold text-slate-800">
+                  {movementScore > 99 ? `${movementScore}` : movementScore}
                 </span>
               </div>
               <div>
                 <p className="text-xs text-slate-500 font-medium">Movement Score</p>
                 <p className={cn("text-sm font-bold",
-                  movementScore > 50 ? 'text-[#FF3B30]' : movementScore > 20 ? 'text-amber-500' : 'text-[#34C759]'
+                  movementScore > 80 ? 'text-[#FF3B30]' : movementScore > 40 ? 'text-amber-500' : 'text-[#34C759]'
                 )}>
-                  {movementScore > 50 ? '高度活動' : movementScore > 20 ? '中度活動' : '低度 / 靜止'}
+                  {movementScore > 80 ? '高度活動' : movementScore > 40 ? '中度活動' : '低度 / 靜止'}
                 </p>
-                <p className="text-[10px] text-slate-400 mt-0.5">閾值: 15 | 模式: MVS</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">閾值: 80 | 模式: MVS</p>
               </div>
             </div>
 
