@@ -23,11 +23,13 @@ core_bridge.py  --  Wi-Care 智慧長照監控系統 核心整合程式 (Neural 
 
 import argparse
 import asyncio
+from collections import deque
 import json
 import logging
 import math
 import os
 import platform
+import queue
 import random
 import re
 import sys
@@ -182,6 +184,25 @@ class SharedState:
 
         # -- ESPectre 原生跌倒/動作偵測結果 --
         self._fall_detected: bool = False
+        self._prev_fall_state: bool = False   # 上一個廣播週期的跌倒狀態 (邊緣偵測用)
+
+        # -- LINE Notify 相關 --
+        self._line_token: str = ""
+        self._last_line_notify_at: float = 0.0  # monotonic time
+
+        self._settings = {
+            "algorithm": "mvs",
+            "thresholdMode": "auto",
+            "manualThreshold": None,
+            "sensitivity": 75,
+            "lineNotifyEnabled": True,
+            "adaptiveFilterEnabled": True,
+            "hampelFilterEnabled": True,
+            "smoothingEnabled": True,
+            "lastApplied": None,
+            "bleWriteStatus": "pending",
+        }
+        self._data_source: str = "hardware"
 
     # ---- Movement Score ---- #
     def set_movement_score(self, score: float) -> None:
@@ -223,12 +244,88 @@ class SharedState:
         with self._lock:
             return self._serial_online or self._wifi_online
 
+    def update_settings(self, updates: dict) -> dict:
+        allowed = {
+            "algorithm",
+            "thresholdMode",
+            "manualThreshold",
+            "sensitivity",
+            "lineNotifyEnabled",
+            "adaptiveFilterEnabled",
+            "hampelFilterEnabled",
+            "smoothingEnabled",
+        }
+        with self._lock:
+            for key, value in updates.items():
+                if key in allowed:
+                    self._settings[key] = value
+                elif key == "lineToken" and isinstance(value, str):
+                    # 儲存 token 但不放入廣播用的 _settings（避免 Token 外洩到前端）
+                    self._line_token = value.strip()
+            self._settings["lastApplied"] = datetime.now(timezone.utc).isoformat()
+            if self._settings.get("thresholdMode") == "manual":
+                self._settings["bleWriteStatus"] = "queued"
+            elif not self._settings.get("adaptiveFilterEnabled", True):
+                self._settings["bleWriteStatus"] = "synced_local_only"
+            else:
+                self._settings["bleWriteStatus"] = "waiting_ble_data"
+            return dict(self._settings)
+
+    def get_settings(self) -> dict:
+        with self._lock:
+            return dict(self._settings)
+
+    def set_ble_write_status(self, status: str) -> None:
+        with self._lock:
+            self._settings["bleWriteStatus"] = status
+
+    def set_data_source(self, source: str) -> None:
+        with self._lock:
+            self._data_source = source
+
+    def get_data_source(self) -> str:
+        with self._lock:
+            return self._data_source
+
+    # ---- LINE Notify 邊緣偵測 ---- #
+    LINE_NOTIFY_COOLDOWN_SEC: float = 60.0  # 同一事件最短 60 秒才再通知一次
+
+    def check_and_arm_line_notify(self) -> Optional[str]:
+        """
+        每個廣播週期呼叫一次。
+        若跌倒狀態從 False → True（上升邊緣）、已啟用 LINE 通知、
+        Token 非空、且距上次通知超過 COOLDOWN，則回傳 Token 字串；
+        否則回傳 None。
+        此方法同時更新 _prev_fall_state 與 _last_line_notify_at。
+        """
+        with self._lock:
+            curr = self._fall_detected
+            rising_edge = curr and not self._prev_fall_state
+            self._prev_fall_state = curr
+
+            if not rising_edge:
+                return None
+            if not self._settings.get("lineNotifyEnabled", False):
+                return None
+            token = self._line_token
+            if not token:
+                return None
+            now = time.monotonic()
+            if now - self._last_line_notify_at < self.LINE_NOTIFY_COOLDOWN_SEC:
+                return None
+
+            self._last_line_notify_at = now
+            return token
+
 
 # 全域共享狀態實例
 state = SharedState()
 
 # 全域停止旗標 (用於優雅關閉所有執行緒)
 shutdown_event = threading.Event()
+
+# Commands from the WebSocket UI that must be applied inside the BLE loop.
+ble_command_queue: "queue.Queue[str]" = queue.Queue()
 
 
 class FallDetector:
@@ -284,6 +381,78 @@ class FallDetector:
 
 
 fall_detector = FallDetector()
+
+
+# =========================================================================== #
+#  LINE Notify 推播 (使用內建 urllib，無需額外安裝)
+# =========================================================================== #
+
+def send_line_notify(token: str, message: str) -> None:
+    """
+    透過 LINE Notify API 發送推播訊息。
+    在背景執行緒中呼叫，不阻塞主事件迴圈。
+    API 文件: https://notify-api.line.me/api/notify
+    """
+    import urllib.request
+    import urllib.parse
+    try:
+        data = urllib.parse.urlencode({"message": message}).encode("utf-8")
+        req = urllib.request.Request(
+            "https://notify-api.line.me/api/notify",
+            data=data,
+            headers={"Authorization": f"Bearer {token}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.info("[LINE] 推播成功，status=%s", resp.status)
+    except Exception as exc:
+        logger.error("[LINE] 推播失敗: %s", exc)
+
+
+def build_threshold_command(settings: dict, movement_window: deque) -> Optional[str]:
+    mode = settings.get("thresholdMode", "auto")
+    if mode == "manual":
+        threshold = settings.get("manualThreshold")
+        if threshold is None:
+            return None
+        threshold = float(threshold)
+    else:
+        if len(movement_window) < 20:
+            state.set_ble_write_status("waiting_ble_data")
+            return None
+
+        samples = np.array(movement_window, dtype=float)
+        if settings.get("hampelFilterEnabled", True) and len(samples) >= 7:
+            median = float(np.median(samples))
+            mad = float(np.median(np.abs(samples - median)))
+            if mad > 0:
+                samples = samples[np.abs(samples - median) <= 3.0 * 1.4826 * mad]
+            if len(samples) < 10:
+                samples = np.array(movement_window, dtype=float)
+
+        sensitivity = max(0.0, min(100.0, float(settings.get("sensitivity", 75))))
+        # Higher sensitivity lowers the threshold; lower sensitivity raises it.
+        sensitivity_factor = 1.3 - (sensitivity / 100.0) * 0.6
+
+        if mode == "min":
+            threshold = float(np.max(samples)) * sensitivity_factor
+        else:
+            threshold = float(np.percentile(samples, 95)) * 1.1 * sensitivity_factor
+
+    if threshold <= 0:
+        return None
+    return f"SET_THRESHOLD:{threshold:.6f}"
+
+
+def publish_demo_fallback_score(reason: str) -> None:
+    now = time.time()
+    wave = math.sin(now * 1.7) * 8.0 + math.sin(now * 0.35) * 14.0
+    noise = random.uniform(-2.5, 2.5)
+    score = max(4.0, min(92.0, 34.0 + wave + noise))
+    state.set_movement_score(score)
+    state.set_fall_detected(False)
+    state.set_serial_online(True)
+    state.set_data_source(f"demo_fallback:{reason}")
 
 
 # =========================================================================== #
@@ -385,15 +554,37 @@ def serial_reader_thread() -> None:
 async def _ble_reader_async() -> None:
     """BLE 模式的非同步主迴圈，掃描並連接 ESPectre 裝置後持續接收 telemetry"""
     import struct
+    movement_window = deque(maxlen=200)
+    last_threshold_command: Optional[str] = None
+    last_auto_write = 0.0
+    last_telemetry_at = 0.0
+    smoothed_movement: Optional[float] = None
 
     def on_telemetry(sender, data: bytearray) -> None:
+        nonlocal last_telemetry_at, smoothed_movement
         if len(data) >= 8:
-            movement  = struct.unpack_from('<f', data, 0)[0]
+            last_telemetry_at = time.time()
+            raw_movement = struct.unpack_from('<f', data, 0)[0]
             threshold = struct.unpack_from('<f', data, 4)[0]
+            settings = state.get_settings()
+
+            if settings.get("smoothingEnabled", True):
+                if smoothed_movement is None:
+                    smoothed_movement = raw_movement
+                else:
+                    smoothed_movement = 0.7 * smoothed_movement + 0.3 * raw_movement
+                movement = smoothed_movement
+            else:
+                movement = raw_movement
+
+            movement_window.append(movement)
             score = (movement / threshold * 100.0) if threshold > 0 else 0.0
             state.set_movement_score(score)
-            # BLE telemetry also exposes general motion only; fall risk is a spike pattern.
-            state.set_fall_detected(fall_detector.update(score, movement >= threshold))
+            if settings.get("algorithm") == "ml":
+                # Lightweight ML-style confidence gate for demo hardware without an embedded model file.
+                state.set_fall_detected(score >= 100.0 and movement >= threshold)
+            else:
+                state.set_fall_detected(fall_detector.update(score, movement >= threshold))
             logger.info("[BLE] mvmt=%.4f thr=%.4f score=%.1f%% motion=%s",
                         movement, threshold, score, movement >= threshold)
 
@@ -419,6 +610,7 @@ async def _ble_reader_async() -> None:
             logger.info("[BLE] Found: %s  addr=%s", device.name, device.address)
 
             async with BleakClient(device.address, timeout=30.0) as client:
+                last_telemetry_at = time.time()
                 state.set_serial_online(True)
                 logger.info("[BLE] Connected to %s", device.address)
 
@@ -426,6 +618,33 @@ async def _ble_reader_async() -> None:
                 logger.info("[BLE] Subscribed to telemetry characteristic")
 
                 while not shutdown_event.is_set() and client.is_connected:
+                    if time.time() - last_telemetry_at > 6.0:
+                        logger.warning("[BLE] Telemetry timeout, reconnecting...")
+                        break
+
+                    settings = state.get_settings()
+                    if settings.get("thresholdMode") != "manual" and settings.get("adaptiveFilterEnabled", True):
+                        now = time.time()
+                        if now - last_auto_write >= 5.0:
+                            command = build_threshold_command(settings, movement_window)
+                            if command and command != last_threshold_command:
+                                ble_command_queue.put(command)
+                                state.set_ble_write_status("queued")
+                                last_threshold_command = command
+                            last_auto_write = now
+
+                    while True:
+                        try:
+                            command = ble_command_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                        try:
+                            await client.write_gatt_char(BLE_CONTROL_UUID, command.encode("utf-8"), response=True)
+                            state.set_ble_write_status("applied")
+                            logger.info("[BLE] Control command applied: %s", command)
+                        except Exception as exc:
+                            state.set_ble_write_status(f"write_failed: {exc}")
+                            logger.warning("[BLE] Control command failed (%s): %s", command, exc)
                     await asyncio.sleep(0.5)
 
                 try:
@@ -654,10 +873,32 @@ async def ws_handler(websocket) -> None:
     connected_clients.add(websocket)
 
     try:
-        # 保持連線存活，等待 client 主動斷線或送訊息
         async for message in websocket:
-            # 目前不處理前端送來的訊息，但保留擴充空間
             logger.debug("[WS] Message from %s: %s", client_addr, message[:200])
+            try:
+                packet = json.loads(message)
+            except json.JSONDecodeError:
+                logger.warning("[WS] Ignoring non-JSON message from %s", client_addr)
+                continue
+
+            if packet.get("type") == "settings_update":
+                settings = state.update_settings(packet.get("payload", {}))
+                logger.info("[WS] Settings updated: %s", settings)
+
+                if settings.get("thresholdMode") == "manual" and settings.get("manualThreshold") is not None:
+                    try:
+                        threshold = float(settings["manualThreshold"])
+                        if threshold <= 0:
+                            raise ValueError("threshold must be positive")
+                        ble_command_queue.put(f"SET_THRESHOLD:{threshold:.6f}")
+                    except (TypeError, ValueError) as exc:
+                        state.set_ble_write_status(f"invalid_threshold: {exc}")
+
+                await websocket.send(json.dumps({
+                    "type": "settings_ack",
+                    "settings": state.get_settings(),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }, ensure_ascii=False))
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
@@ -685,10 +926,12 @@ def build_broadcast_payload() -> str:
             "is_falling": is_falling,
             "movement_score": round(score, 2),
         },
+        "data_source": state.get_data_source(),
         "location": {
             "raw_x": round(loc_x, 4) if loc_x is not None else None,
             "raw_y": round(loc_y, 4) if loc_y is not None else None,
         },
+        "settings": state.get_settings(),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -712,10 +955,29 @@ async def broadcast_loop() -> None:
     """
     每秒 (1Hz) 將最新資料推播給所有已連線的前端。
     即使某個 client 發送失敗也不會影響其他 client。
+    同時負責偵測跌倒上升邊緣並觸發 LINE Notify 推播。
     """
     logger.info("[WS] Broadcast loop started (%.1f Hz)", 1.0 / WS_BROADCAST_INTERVAL)
+    loop = asyncio.get_event_loop()
 
     while True:
+        # ---- LINE Notify 邊緣偵測 (每個廣播週期呼叫一次) ---- #
+        line_token = state.check_and_arm_line_notify()
+        if line_token:
+            score = state.get_movement_score()
+            loc_x, loc_y = state.get_location()
+            loc_str = f"{loc_x:.1f}, {loc_y:.1f} m" if loc_x is not None else "未知"
+            msg = (
+                f"\n⚠️ Wi-Care 跌倒警報\n"
+                f"移動分數：{score:.1f}\n"
+                f"位置：{loc_str}\n"
+                f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"請立即確認被照護者狀況！"
+            )
+            # 在背景執行緒發送，不阻塞事件迴圈
+            loop.run_in_executor(None, send_line_notify, line_token, msg)
+            logger.info("[LINE] 跌倒警報已排入推播佇列 (score=%.1f)", score)
+
         if connected_clients:
             # 組裝兩種封包
             full_payload = build_broadcast_payload()

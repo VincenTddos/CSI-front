@@ -34,7 +34,22 @@ export interface CoreBridgePacket {
     raw_x: number | null;
     raw_y: number | null;
   };
+  settings?: SystemSettingsState;
   timestamp: string; // ISO8601
+}
+
+export interface SystemSettingsState {
+  algorithm: 'mvs' | 'ml';
+  thresholdMode: 'auto' | 'min' | 'manual';
+  manualThreshold: number | null;
+  sensitivity: number;
+  lineNotifyEnabled: boolean;
+  lineToken?: string;
+  adaptiveFilterEnabled: boolean;
+  hampelFilterEnabled: boolean;
+  smoothingEnabled: boolean;
+  lastApplied?: string | null;
+  bleWriteStatus?: string;
 }
 
 // Wi-Fi 三角定位座標

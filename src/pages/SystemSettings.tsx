@@ -2,20 +2,68 @@ import React, { useState } from 'react';
 import { Settings, MessageSquare, SlidersHorizontal, Save, ShieldCheck, Terminal, Shield, Download, FileJson, FileText, Lock, Eye, EyeOff, BrainCircuit, Gauge, Zap } from 'lucide-react';
 import { SettingsModal } from '../components/SettingsModal';
 import { cn } from '../lib/utils';
+import { useCSIWebSocket } from '../hooks/useCSIWebSocket';
+import { SystemSettingsState } from '../types';
 
 type DetectionAlgorithm = 'mvs' | 'ml';
 type ThresholdMode = 'auto' | 'min' | 'manual';
+const SETTINGS_KEY = 'systemSettings';
+
+const defaultSettings: SystemSettingsState = {
+  algorithm: 'mvs',
+  thresholdMode: 'auto',
+  manualThreshold: 0.003,
+  sensitivity: 75,
+  lineNotifyEnabled: true,
+  lineToken: '',
+  adaptiveFilterEnabled: true,
+  hampelFilterEnabled: true,
+  smoothingEnabled: true,
+};
+
+function loadSettings(): SystemSettingsState {
+  try {
+    const saved = localStorage.getItem(SETTINGS_KEY);
+    return saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
+  } catch {
+    return defaultSettings;
+  }
+}
 
 export function SystemSettings() {
-  const [sensitivity, setSensitivity] = useState(75);
+  const savedSettings = loadSettings();
+  const { isConnected, bridgeStatus, sendSettings, lastSettingsAck } = useCSIWebSocket();
+  const [sensitivity, setSensitivity] = useState(savedSettings.sensitivity);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [algorithm, setAlgorithm] = useState<DetectionAlgorithm>('mvs');
-  const [thresholdMode, setThresholdMode] = useState<ThresholdMode>('auto');
-  const [manualThreshold, setManualThreshold] = useState('0.003');
+  const [algorithm, setAlgorithm] = useState<DetectionAlgorithm>(savedSettings.algorithm);
+  const [thresholdMode, setThresholdMode] = useState<ThresholdMode>(savedSettings.thresholdMode);
+  const [manualThreshold, setManualThreshold] = useState(String(savedSettings.manualThreshold ?? 0.003));
+  const [lineNotifyEnabled, setLineNotifyEnabled] = useState(savedSettings.lineNotifyEnabled);
+  const [adaptiveFilterEnabled, setAdaptiveFilterEnabled] = useState(savedSettings.adaptiveFilterEnabled);
+  const [hampelFilterEnabled, setHampelFilterEnabled] = useState(savedSettings.hampelFilterEnabled);
+  const [smoothingEnabled, setSmoothingEnabled] = useState(savedSettings.smoothingEnabled);
+  const [lineToken, setLineToken] = useState(savedSettings.lineToken ?? '');
   const [showToken, setShowToken] = useState(false);
   const [showSavedMsg, setShowSavedMsg] = useState(false);
 
-  const flash = () => { setShowSavedMsg(true); setTimeout(() => setShowSavedMsg(false), 2000); };
+  const currentSettings: SystemSettingsState = {
+    algorithm,
+    thresholdMode,
+    manualThreshold: thresholdMode === 'manual' ? Number(manualThreshold) : null,
+    sensitivity,
+    lineNotifyEnabled,
+    lineToken,
+    adaptiveFilterEnabled,
+    hampelFilterEnabled,
+    smoothingEnabled,
+  };
+
+  const flash = () => {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentSettings));
+    sendSettings(currentSettings);
+    setShowSavedMsg(true);
+    setTimeout(() => setShowSavedMsg(false), 2000);
+  };
 
   return (
     <div className="h-full flex flex-col space-y-5 overflow-y-auto">
@@ -31,8 +79,17 @@ export function SystemSettings() {
       </div>
 
       {showSavedMsg && (
-        <div className="p-2 bg-green-50 border border-green-200 text-green-700 rounded-lg text-xs max-w-xs">✓ 設定已儲存</div>
+        <div className="p-2 bg-green-50 border border-green-200 text-green-700 rounded-lg text-xs max-w-md">
+          設定已儲存{isConnected ? '，已送出同步' : '；後端未連線，已先保存在本機'}
+        </div>
       )}
+
+      <div className="flex items-center gap-2 text-xs text-slate-500">
+        <span className={cn("w-2 h-2 rounded-full", isConnected ? "bg-green-500" : "bg-slate-300")} />
+        <span>Bridge：{isConnected ? '已連線' : '未連線'}</span>
+        <span className="text-slate-300">|</span>
+        <span>BLE 設定：{lastSettingsAck?.settings?.bleWriteStatus || bridgeStatus?.settings?.bleWriteStatus || 'pending'}</span>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
@@ -148,9 +205,9 @@ export function SystemSettings() {
               {/* AI learning toggles */}
               <div className="space-y-2">
                 {[
-                  { label: '自動環境噪聲過濾', desc: '根據「誤報回饋」調整背景雜訊模型' },
-                  { label: 'Hampel 離群值過濾', desc: 'MAD 方法移除突發干擾 (預設關閉)' },
-                  { label: '低通濾波器 (11Hz)', desc: '過濾高頻噪音，保留人體運動信號' },
+                  { label: '自動環境噪聲過濾', desc: '根據「誤報回饋」調整背景雜訊模型', checked: adaptiveFilterEnabled, setChecked: setAdaptiveFilterEnabled },
+                  { label: 'Hampel 離群值過濾', desc: 'MAD 方法移除突發干擾', checked: hampelFilterEnabled, setChecked: setHampelFilterEnabled },
+                  { label: '低通濾波器 (11Hz)', desc: '過濾高頻噪音，保留人體運動信號', checked: smoothingEnabled, setChecked: setSmoothingEnabled },
                 ].map((item, i) => (
                   <div key={i} className="flex items-center justify-between p-3 rounded-lg border border-slate-100 bg-slate-50">
                     <div>
@@ -158,7 +215,7 @@ export function SystemSettings() {
                       <p className="text-[10px] text-slate-400">{item.desc}</p>
                     </div>
                     <label className="relative inline-flex items-center cursor-pointer">
-                      <input type="checkbox" className="sr-only peer" defaultChecked={i === 0} />
+                      <input type="checkbox" className="sr-only peer" checked={item.checked} onChange={e => item.setChecked(e.target.checked)} />
                       <div className="w-9 h-5 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#007AFF]"></div>
                     </label>
                   </div>
@@ -176,15 +233,29 @@ export function SystemSettings() {
 
           <div className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">LINE Token</label>
+              <label className="block text-xs font-medium text-slate-500 mb-1">
+                LINE Notify Token
+                <a href="https://notify-bot.line.me/my/" target="_blank" rel="noopener noreferrer"
+                  className="ml-2 text-[#00C300] hover:underline text-[10px]">
+                  取得 Token ↗
+                </a>
+              </label>
               <div className="relative">
-                <input type={showToken ? "text" : "password"} defaultValue="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                  className="w-full px-3 py-2 pr-10 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-[#00C300]/20 focus:border-[#00C300] outline-none text-sm font-mono" />
+                <input
+                  type={showToken ? "text" : "password"}
+                  value={lineToken}
+                  onChange={e => setLineToken(e.target.value)}
+                  placeholder="貼上 LINE Notify Token…"
+                  className="w-full px-3 py-2 pr-10 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-[#00C300]/20 focus:border-[#00C300] outline-none text-sm font-mono"
+                />
                 <button onClick={() => setShowToken(!showToken)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1">
                   {showToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+              {lineToken && (
+                <p className="text-[10px] text-green-600 mt-1">✓ Token 已設定，點選「儲存並同步」後生效</p>
+              )}
             </div>
 
             <div className="flex items-center justify-between p-3 rounded-lg border border-slate-100 bg-slate-50">
@@ -193,14 +264,14 @@ export function SystemSettings() {
                 <p className="text-[10px] text-slate-400">偵測到高風險事件時立即通知</p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" className="sr-only peer" defaultChecked />
+                <input type="checkbox" className="sr-only peer" checked={lineNotifyEnabled} onChange={e => setLineNotifyEnabled(e.target.checked)} />
                 <div className="w-9 h-5 bg-slate-200 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#00C300]"></div>
               </label>
             </div>
 
             <button onClick={flash}
               className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-2.5 rounded-lg text-sm flex items-center justify-center gap-2">
-              <Save className="w-4 h-4" /> 儲存 LINE 設定
+              <Save className="w-4 h-4" /> 儲存並同步全部設定
             </button>
           </div>
         </div>
