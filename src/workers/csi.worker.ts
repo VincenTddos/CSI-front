@@ -39,7 +39,7 @@ let isConnected = false;
 // 接收主線程指令
 // message: { type: 'CONNECT' | 'DISCONNECT', url?: string }
 self.onmessage = (e: MessageEvent) => {
-  const { type, url } = e.data;
+  const { type, url, payload } = e.data;
 
   if (type === 'CONNECT' && url) {
     if (socket) {
@@ -52,6 +52,12 @@ self.onmessage = (e: MessageEvent) => {
       socket = null;
       isConnected = false;
       postMessage({ type: 'STATUS', payload: { isConnected: false } });
+    }
+  } else if (type === 'SEND_JSON') {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(payload));
+    } else {
+      postMessage({ type: 'ERROR', payload: 'WebSocket is not connected' });
     }
   }
 };
@@ -102,6 +108,12 @@ function connectWebSocket(url: string) {
         } else if (rawData.type === 'movement') {
             // 如果後端已經傳來 movement data，直接轉發
             postMessage({ type: 'DATA', payload: { metrics: rawData } });
+
+        } else if (rawData.type === 'settings_ack') {
+            postMessage({
+              type: 'SETTINGS_ACK',
+              payload: rawData
+            });
 
         } else if (rawData.status && rawData.ai_analysis && rawData.location) {
             // core_bridge.py 的完整狀態封包 (含三角定位座標)

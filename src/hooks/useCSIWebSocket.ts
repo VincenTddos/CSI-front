@@ -1,12 +1,18 @@
-import { useState, useEffect, useRef } from 'react';
-import { CSIDataPacket, MovementData, CoreBridgePacket, LocationData } from '../types';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { CSIDataPacket, MovementData, CoreBridgePacket, LocationData, SystemSettingsState } from '../types';
 
-export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
+function getDefaultWebSocketUrl() {
+  const host = window.location.hostname || 'localhost';
+  return `ws://${host}:8765`;
+}
+
+export function useCSIWebSocket(url: string = getDefaultWebSocketUrl()) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<CSIDataPacket | null>(null);
   const [movementMetrics, setMovementMetrics] = useState<MovementData>({ score: 0, isMotion: false });
   const [bridgeStatus, setBridgeStatus] = useState<CoreBridgePacket | null>(null);
   const [locationData, setLocationData] = useState<LocationData>({ x: null, y: null, timestamp: '' });
+  const [lastSettingsAck, setLastSettingsAck] = useState<any>(null);
   const workerRef = useRef<Worker | null>(null);
 
   useEffect(() => {
@@ -55,6 +61,8 @@ export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
 
       } else if (type === 'ERROR') {
         console.error('CSI Worker Error:', payload);
+      } else if (type === 'SETTINGS_ACK') {
+        setLastSettingsAck(payload);
       }
     };
 
@@ -67,5 +75,15 @@ export function useCSIWebSocket(url: string = 'ws://localhost:8765') {
     };
   }, [url]);
 
-  return { isConnected, lastMessage, movementMetrics, bridgeStatus, locationData };
+  const sendSettings = useCallback((settings: Partial<SystemSettingsState>) => {
+    workerRef.current?.postMessage({
+      type: 'SEND_JSON',
+      payload: {
+        type: 'settings_update',
+        payload: settings,
+      },
+    });
+  }, []);
+
+  return { isConnected, lastMessage, movementMetrics, bridgeStatus, locationData, sendSettings, lastSettingsAck };
 }
