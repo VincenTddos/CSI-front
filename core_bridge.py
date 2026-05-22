@@ -202,7 +202,7 @@ class SharedState:
             "lastApplied": None,
             "bleWriteStatus": "pending",
         }
-        self._data_source: str = "hardware"
+        self._data_source: str = "no_data"
 
     # ---- Movement Score ---- #
     def set_movement_score(self, score: float) -> None:
@@ -444,17 +444,6 @@ def build_threshold_command(settings: dict, movement_window: deque) -> Optional[
     return f"SET_THRESHOLD:{threshold:.6f}"
 
 
-def publish_demo_fallback_score(reason: str) -> None:
-    now = time.time()
-    wave = math.sin(now * 1.7) * 8.0 + math.sin(now * 0.35) * 14.0
-    noise = random.uniform(-2.5, 2.5)
-    score = max(4.0, min(92.0, 34.0 + wave + noise))
-    state.set_movement_score(score)
-    state.set_fall_detected(False)
-    state.set_serial_online(True)
-    state.set_data_source(f"demo_fallback:{reason}")
-
-
 # =========================================================================== #
 #  任務一：ESP32 序列埠讀取 (在獨立 Thread 中執行)
 # =========================================================================== #
@@ -580,6 +569,8 @@ async def _ble_reader_async() -> None:
             movement_window.append(movement)
             score = (movement / threshold * 100.0) if threshold > 0 else 0.0
             state.set_movement_score(score)
+            state.set_data_source("hardware_ble")
+            state.set_serial_online(True)
             if settings.get("algorithm") == "ml":
                 # Lightweight ML-style confidence gate for demo hardware without an embedded model file.
                 state.set_fall_detected(score >= 100.0 and movement >= threshold)
@@ -604,6 +595,8 @@ async def _ble_reader_async() -> None:
                 logger.warning("[BLE] ESPectre not found, retrying in 5s...")
                 state.set_serial_online(False)
                 state.set_movement_score(0.0)
+                state.set_fall_detected(False)
+                state.set_data_source("device_not_found")
                 await asyncio.sleep(5.0)
                 continue
 
@@ -611,7 +604,10 @@ async def _ble_reader_async() -> None:
 
             async with BleakClient(device.address, timeout=30.0) as client:
                 last_telemetry_at = time.time()
-                state.set_serial_online(True)
+                state.set_serial_online(False)
+                state.set_movement_score(0.0)
+                state.set_fall_detected(False)
+                state.set_data_source("connected_waiting_telemetry")
                 logger.info("[BLE] Connected to %s", device.address)
 
                 await client.start_notify(BLE_TELEMETRY_UUID, on_telemetry)
@@ -620,6 +616,10 @@ async def _ble_reader_async() -> None:
                 while not shutdown_event.is_set() and client.is_connected:
                     if time.time() - last_telemetry_at > 6.0:
                         logger.warning("[BLE] Telemetry timeout, reconnecting...")
+                        state.set_serial_online(False)
+                        state.set_movement_score(0.0)
+                        state.set_fall_detected(False)
+                        state.set_data_source("telemetry_timeout")
                         break
 
                     settings = state.get_settings()
@@ -657,9 +657,11 @@ async def _ble_reader_async() -> None:
 
         state.set_serial_online(False)
         state.set_movement_score(0.0)
+        state.set_fall_detected(False)
 
         if not shutdown_event.is_set():
             logger.info("[BLE] Reconnecting in 5s...")
+            state.set_data_source("reconnecting")
             await asyncio.sleep(5.0)
 
 

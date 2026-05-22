@@ -26,6 +26,7 @@ export interface MovementData {
 // 來自 core_bridge.py 的完整狀態封包
 export interface CoreBridgePacket {
   status: 'online' | 'offline';
+  data_source?: string;
   ai_analysis: {
     is_falling: boolean;
     movement_score: number;
