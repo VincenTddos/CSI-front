@@ -14,11 +14,18 @@ interface StoredUser extends RegisterData {
   id: string;
 }
 
+export type GoogleLoginResult =
+  | { success: true; message: string }
+  | { success: false; message: string; needsRole?: false }
+  | { success: false; needsRole: true; credential: string; googleName: string; googlePicture: string };
+
 interface UserContextType {
   user: User | null;
   login: (username: string, password: string, role: UserRole) => { success: boolean; message: string };
   register: (data: RegisterData) => { success: boolean; message: string };
-  loginWithGoogle: (credential: string) => { success: boolean; message: string };
+  loginWithGoogle: (credential: string) => GoogleLoginResult;
+  completeGoogleLogin: (credential: string, role: UserRole) => { success: boolean; message: string };
+  switchRole: (newRole: UserRole) => void;
   logout: () => void;
 }
 
@@ -113,34 +120,31 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const loginWithGoogle = (credential: string) => {
-    const payload = parseGoogleJwt(credential);
-    if (!payload) {
-      return { success: false, message: 'Google 驗證失敗，請再試一次' };
-    }
-
+  /** 將 Google 帳號資訊存入並設定登入狀態（需先有角色） */
+  const applyGoogleUser = (payload: { sub: string; name: string; picture: string }, role: UserRole) => {
     const allUsers = getStoredUsers();
-    // 以 Google sub (唯一 ID) 或 email 識別帳號
     const googleUsername = `google_${payload.sub}`;
     let foundUser = allUsers.find((u) => u.username === googleUsername);
 
     if (!foundUser) {
-      // 首次登入：自動建立帳號（預設醫護人員角色）
       const newStoredUser: StoredUser = {
         id: payload.sub,
         realName: payload.name,
         username: googleUsername,
-        password: '',          // Google 用戶不用密碼
-        role: 'medical',
-        unitCode: 'GOOGLE',    // 佔位符，代表 Google 登入用戶
+        password: '',
+        role,
+        unitCode: role === 'medical' ? 'GOOGLE' : undefined,
+        familyCode: role === 'family' ? 'GOOGLE' : undefined,
       };
       allUsers.push(newStoredUser);
       saveStoredUsers(allUsers);
       foundUser = newStoredUser;
-    } else if (foundUser.realName !== payload.name) {
-      // 修正舊版 atob 解碼造成的中文名字亂碼，並同步 Google 最新名稱。
-      foundUser.realName = payload.name;
-      saveStoredUsers(allUsers);
+    } else {
+      // 同步 Google 最新名稱
+      if (foundUser.realName !== payload.name) {
+        foundUser.realName = payload.name;
+        saveStoredUsers(allUsers);
+      }
     }
 
     const newUser: User = {
@@ -151,10 +155,65 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       assignedRooms: foundUser.role === 'medical' ? ['Room 204', 'Room 205', 'Room 206'] : undefined,
       patientName: foundUser.role === 'family' ? '王老先生' : undefined,
     };
-
     setUser(newUser);
     localStorage.setItem('currentUser', JSON.stringify(newUser));
+  };
+
+  const loginWithGoogle = (credential: string): GoogleLoginResult => {
+    const payload = parseGoogleJwt(credential);
+    if (!payload) {
+      return { success: false, message: 'Google 驗證失敗，請再試一次' };
+    }
+
+    const allUsers = getStoredUsers();
+    const googleUsername = `google_${payload.sub}`;
+    const foundUser = allUsers.find((u) => u.username === googleUsername);
+
+    if (!foundUser) {
+      // 🆕 新用戶：請求前端顯示角色選擇視窗
+      return {
+        success: false,
+        needsRole: true,
+        credential,
+        googleName: payload.name,
+        googlePicture: payload.picture,
+      };
+    }
+
+    // 已有帳號：直接登入
+    applyGoogleUser(payload, foundUser.role);
     return { success: true, message: 'Google 登入成功' };
+  };
+
+  /** 新用戶選完角色後呼叫，完成 Google 登入 */
+  const completeGoogleLogin = (credential: string, role: UserRole) => {
+    const payload = parseGoogleJwt(credential);
+    if (!payload) {
+      return { success: false, message: 'Google 驗證失敗，請再試一次' };
+    }
+    applyGoogleUser(payload, role);
+    return { success: true, message: 'Google 登入成功' };
+  };
+
+  /** 切換目前登入者的角色 */
+  const switchRole = (newRole: UserRole) => {
+    if (!user) return;
+    const updatedUser: User = {
+      ...user,
+      role: newRole,
+      assignedRooms: newRole === 'medical' ? ['Room 204', 'Room 205', 'Room 206'] : undefined,
+      patientName: newRole === 'family' ? '王老先生' : undefined,
+    };
+    setUser(updatedUser);
+    localStorage.setItem('currentUser', JSON.stringify(updatedUser));
+
+    // 同步更新 allUsers 裡的角色
+    const allUsers = getStoredUsers();
+    const idx = allUsers.findIndex((u) => u.id === user.id);
+    if (idx !== -1) {
+      allUsers[idx].role = newRole;
+      saveStoredUsers(allUsers);
+    }
   };
 
   const logout = () => {
@@ -166,7 +225,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <UserContext.Provider value={{ user, login, register, loginWithGoogle, logout }}>
+    <UserContext.Provider value={{ user, login, register, loginWithGoogle, completeGoogleLogin, switchRole, logout }}>
       {children}
     </UserContext.Provider>
   );

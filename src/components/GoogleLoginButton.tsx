@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { HeartPulse, Building2, ShieldCheck, X } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
+import { UserRole } from '../types';
 
 interface Props {
   onSuccess?: () => void;
@@ -10,14 +12,82 @@ interface Props {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const gis = () => (window as any).google as any;
 
+/** Google 登入成功後的角色選擇彈窗（僅新用戶需要） */
+function RoleSelectModal({
+  googleName,
+  googlePicture,
+  onSelect,
+  onCancel,
+}: {
+  googleName: string;
+  googlePicture: string;
+  onSelect: (role: UserRole) => void;
+  onCancel: () => void;
+}) {
+  const roles: { id: UserRole; label: string; desc: string; icon: React.ElementType; color: string }[] = [
+    { id: 'medical', label: '醫護人員', desc: '可查看即時監控、管理健康記錄', icon: HeartPulse, color: 'text-blue-500 border-blue-200 bg-blue-50 hover:border-blue-400 hover:bg-blue-100' },
+    { id: 'family', label: '家屬', desc: '可查看指定住民的狀態與記錄', icon: Building2, color: 'text-green-500 border-green-200 bg-green-50 hover:border-green-400 hover:bg-green-100' },
+    { id: 'admin', label: '管理者', desc: '可存取所有功能與人員管理', icon: ShieldCheck, color: 'text-purple-500 border-purple-200 bg-purple-50 hover:border-purple-400 hover:bg-purple-100' },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="w-full max-w-sm bg-white rounded-2xl shadow-2xl p-6 animate-in fade-in zoom-in-95 duration-200">
+        {/* 頂部關閉按鈕 */}
+        <div className="flex justify-end mb-2">
+          <button onClick={onCancel} className="text-slate-400 hover:text-slate-600 transition-colors">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* 使用者資訊 */}
+        <div className="flex flex-col items-center mb-6">
+          <img
+            src={googlePicture}
+            alt={googleName}
+            className="w-16 h-16 rounded-full shadow-md mb-3 object-cover"
+            onError={(e) => { (e.target as HTMLImageElement).src = `https://ui-avatars.com/api/?name=${encodeURIComponent(googleName)}&background=2C363F&color=fff`; }}
+          />
+          <p className="text-slate-800 font-semibold text-lg">{googleName}</p>
+          <p className="text-slate-500 text-sm mt-1">請選擇您的使用者身份</p>
+        </div>
+
+        {/* 角色選擇 */}
+        <div className="space-y-3">
+          {roles.map((r) => (
+            <button
+              key={r.id}
+              onClick={() => onSelect(r.id)}
+              className={`w-full flex items-center gap-4 p-4 rounded-xl border-2 transition-all duration-150 ${r.color}`}
+            >
+              <r.icon className="w-6 h-6 flex-shrink-0" />
+              <div className="text-left">
+                <p className="font-semibold text-slate-800">{r.label}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{r.desc}</p>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function GoogleLoginButton({ onSuccess }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
-  const { loginWithGoogle } = useUser();
+  const pendingCredentialRef = useRef<string>('');
+
+  const { loginWithGoogle, completeGoogleLogin } = useUser();
   const navigate = useNavigate();
   const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState('');
+  const [pendingRole, setPendingRole] = useState<{
+    googleName: string;
+    googlePicture: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!clientId) return;
@@ -31,11 +101,19 @@ export function GoogleLoginButton({ onSuccess }: Props) {
         callback: (response: { credential: string }) => {
           setError('');
           const result = loginWithGoogle(response.credential);
+
           if (result.success) {
             onSuccess?.();
             navigate('/realtime');
+          } else if ('needsRole' in result && result.needsRole) {
+            // 🆕 新用戶：顯示角色選擇視窗
+            pendingCredentialRef.current = result.credential;
+            setPendingRole({
+              googleName: result.googleName,
+              googlePicture: result.googlePicture,
+            });
           } else {
-            setError(result.message);
+            setError('message' in result ? result.message : 'Google 登入失敗');
           }
         },
         cancel_on_tap_outside: true,
@@ -66,6 +144,18 @@ export function GoogleLoginButton({ onSuccess }: Props) {
     }
   }, [clientId]);
 
+  /** 使用者在彈窗選完角色後呼叫 */
+  const handleRoleSelect = (role: UserRole) => {
+    const result = completeGoogleLogin(pendingCredentialRef.current, role);
+    setPendingRole(null);
+    if (result.success) {
+      onSuccess?.();
+      navigate('/realtime');
+    } else {
+      setError(result.message);
+    }
+  };
+
   // 未設定 Client ID 時顯示說明
   if (!clientId) {
     return (
@@ -91,12 +181,24 @@ export function GoogleLoginButton({ onSuccess }: Props) {
   }
 
   return (
-    <div className="w-full">
-      {error && (
-        <p className="text-sm text-red-500 text-center mb-2">{error}</p>
+    <>
+      {/* 角色選擇彈窗（新用戶） */}
+      {pendingRole && (
+        <RoleSelectModal
+          googleName={pendingRole.googleName}
+          googlePicture={pendingRole.googlePicture}
+          onSelect={handleRoleSelect}
+          onCancel={() => { setPendingRole(null); pendingCredentialRef.current = ''; }}
+        />
       )}
-      {!isReady && <div className="w-full h-11 rounded-xl bg-slate-100 animate-pulse" />}
-      <div ref={containerRef} className="w-full flex justify-center min-h-[44px]" />
-    </div>
+
+      <div className="w-full">
+        {error && (
+          <p className="text-sm text-red-500 text-center mb-2">{error}</p>
+        )}
+        {!isReady && <div className="w-full h-11 rounded-xl bg-slate-100 animate-pulse" />}
+        <div ref={containerRef} className="w-full flex justify-center min-h-[44px]" />
+      </div>
+    </>
   );
 }

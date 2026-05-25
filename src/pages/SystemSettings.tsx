@@ -8,11 +8,13 @@ import { SystemSettingsState } from '../types';
 type DetectionAlgorithm = 'mvs' | 'ml';
 type ThresholdMode = 'auto' | 'min' | 'manual';
 const SETTINGS_KEY = 'systemSettings';
+const MIN_MANUAL_THRESHOLD = 0.05;
+const DEFAULT_MANUAL_THRESHOLD = 1.0;
 
 const defaultSettings: SystemSettingsState = {
   algorithm: 'mvs',
   thresholdMode: 'auto',
-  manualThreshold: 0.003,
+  manualThreshold: DEFAULT_MANUAL_THRESHOLD,
   sensitivity: 75,
   lineNotifyEnabled: true,
   lineToken: '',
@@ -24,7 +26,15 @@ const defaultSettings: SystemSettingsState = {
 function loadSettings(): SystemSettingsState {
   try {
     const saved = localStorage.getItem(SETTINGS_KEY);
-    return saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
+    const settings = saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
+    const parsedThreshold = Number(settings.manualThreshold ?? DEFAULT_MANUAL_THRESHOLD);
+    return {
+      ...settings,
+      manualThreshold: Number.isFinite(parsedThreshold)
+        ? Math.max(MIN_MANUAL_THRESHOLD, parsedThreshold)
+        : DEFAULT_MANUAL_THRESHOLD,
+      sensitivity: Math.min(100, Math.max(0, Number(settings.sensitivity ?? defaultSettings.sensitivity))),
+    };
   } catch {
     return defaultSettings;
   }
@@ -37,7 +47,7 @@ export function SystemSettings() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [algorithm, setAlgorithm] = useState<DetectionAlgorithm>(savedSettings.algorithm);
   const [thresholdMode, setThresholdMode] = useState<ThresholdMode>(savedSettings.thresholdMode);
-  const [manualThreshold, setManualThreshold] = useState(String(savedSettings.manualThreshold ?? 0.003));
+  const [manualThreshold, setManualThreshold] = useState(String(savedSettings.manualThreshold ?? DEFAULT_MANUAL_THRESHOLD));
   const [lineNotifyEnabled, setLineNotifyEnabled] = useState(savedSettings.lineNotifyEnabled);
   const [adaptiveFilterEnabled, setAdaptiveFilterEnabled] = useState(savedSettings.adaptiveFilterEnabled);
   const [hampelFilterEnabled, setHampelFilterEnabled] = useState(savedSettings.hampelFilterEnabled);
@@ -46,10 +56,18 @@ export function SystemSettings() {
   const [showToken, setShowToken] = useState(false);
   const [showSavedMsg, setShowSavedMsg] = useState(false);
 
+  const parsedManualThreshold = Number(manualThreshold);
+  const safeManualThreshold = Number.isFinite(parsedManualThreshold)
+    ? Math.max(MIN_MANUAL_THRESHOLD, parsedManualThreshold)
+    : DEFAULT_MANUAL_THRESHOLD;
+  const isManualThresholdValid = thresholdMode !== 'manual' || (
+    Number.isFinite(parsedManualThreshold) && parsedManualThreshold >= MIN_MANUAL_THRESHOLD
+  );
+
   const currentSettings: SystemSettingsState = {
     algorithm,
     thresholdMode,
-    manualThreshold: thresholdMode === 'manual' ? Number(manualThreshold) : null,
+    manualThreshold: thresholdMode === 'manual' ? safeManualThreshold : null,
     sensitivity,
     lineNotifyEnabled,
     lineToken,
@@ -59,6 +77,10 @@ export function SystemSettings() {
   };
 
   const flash = () => {
+    if (!isManualThresholdValid) return;
+    if (thresholdMode === 'manual') {
+      setManualThreshold(String(safeManualThreshold));
+    }
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(currentSettings));
     sendSettings(currentSettings);
     setShowSavedMsg(true);
@@ -159,9 +181,9 @@ export function SystemSettings() {
               {/* Threshold mode */}
               <div className="flex gap-2 mb-4">
                 {([
-                  { key: 'auto', label: 'Auto (P95×1.1)', desc: '平衡模式' },
-                  { key: 'min', label: 'Min (P100)', desc: '最大靈敏' },
-                  { key: 'manual', label: '手動', desc: '自訂閾值' },
+                  { key: 'auto', label: 'Auto', desc: 'P95 平衡' },
+                  { key: 'min', label: '高靈敏', desc: 'P75 較敏感' },
+                  { key: 'manual', label: '手動', desc: '安全下限保護' },
                 ] as { key: ThresholdMode; label: string; desc: string }[]).map(mode => (
                   <button key={mode.key} onClick={() => setThresholdMode(mode.key)}
                     className={cn("flex-1 p-2 rounded-lg border text-xs transition-all",
@@ -175,10 +197,16 @@ export function SystemSettings() {
 
               {thresholdMode === 'manual' && (
                 <div className="mb-4">
-                  <label className="block text-xs font-medium text-slate-500 mb-1">手動閾值 (移動方差)</label>
-                  <input type="text" value={manualThreshold}
+                  <label className="block text-xs font-medium text-slate-500 mb-1">手動閾值 (BLE movement threshold)</label>
+                  <input type="number" min={MIN_MANUAL_THRESHOLD} step="0.05" value={manualThreshold}
                     onChange={e => setManualThreshold(e.target.value)}
-                    className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm font-mono focus:ring-2 focus:ring-[#007AFF]/20 focus:border-[#007AFF] outline-none" />
+                    className={cn(
+                      "w-full px-3 py-2 rounded-lg border text-sm font-mono focus:ring-2 focus:ring-[#007AFF]/20 focus:border-[#007AFF] outline-none",
+                      isManualThresholdValid ? "border-slate-200" : "border-red-300 bg-red-50"
+                    )} />
+                  <p className={cn("mt-1 text-[10px]", isManualThresholdValid ? "text-slate-400" : "text-red-500")}>
+                    最小值 {MIN_MANUAL_THRESHOLD}。過低的閾值會讓 Movement Score 爆衝。
+                  </p>
                 </div>
               )}
 
@@ -269,8 +297,8 @@ export function SystemSettings() {
               </label>
             </div>
 
-            <button onClick={flash}
-              className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-2.5 rounded-lg text-sm flex items-center justify-center gap-2">
+            <button onClick={flash} disabled={!isManualThresholdValid}
+              className="w-full bg-slate-800 hover:bg-slate-900 disabled:bg-slate-300 disabled:cursor-not-allowed text-white font-bold py-2.5 rounded-lg text-sm flex items-center justify-center gap-2">
               <Save className="w-4 h-4" /> 儲存並同步全部設定
             </button>
           </div>
