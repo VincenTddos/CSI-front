@@ -30,6 +30,9 @@ export interface CoreBridgePacket {
   ai_analysis: {
     is_falling: boolean;
     movement_score: number;
+    raw_movement_score?: number;
+    movement_value?: number | null;
+    movement_threshold?: number | null;
   };
   location: {
     raw_x: number | null;

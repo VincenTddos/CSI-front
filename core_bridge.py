@@ -157,6 +157,11 @@ BLE_TELEMETRY_UUID    = "119d5cac-48da-4bd9-bfc3-169805868258"  # Notify: float3
 BLE_SYSINFO_UUID      = "c8c89ffa-c401-461f-9ffc-942fa04adfe3"  # Notify: key=value text
 BLE_CONTROL_UUID      = "33ed9214-a8d7-40e8-82d1-c82747dcdc71"  # Write: "SET_THRESHOLD:X.XX"
 
+# Keep BLE thresholds away from near-zero values. Tiny thresholds make
+# movement/threshold ratios explode and confuse the UI activity classifier.
+MIN_BLE_THRESHOLD = 0.05
+MAX_UI_MOVEMENT_SCORE = 100.0
+
 
 # =========================================================================== #
 #  執行緒安全的共享資料容器
@@ -173,6 +178,9 @@ class SharedState:
 
         # -- 來自 Serial 的最新移動分數 --
         self._movement_score: float = 0.0
+        self._raw_movement_score: float = 0.0
+        self._movement_value: Optional[float] = None
+        self._movement_threshold: Optional[float] = None
 
         # -- 來自 Wi-Fi 定位的最新座標 --
         self._location_x: Optional[float] = None
@@ -208,10 +216,32 @@ class SharedState:
     def set_movement_score(self, score: float) -> None:
         with self._lock:
             self._movement_score = score
+            self._raw_movement_score = score
 
     def get_movement_score(self) -> float:
         with self._lock:
             return self._movement_score
+
+    def set_ble_movement_metrics(
+        self,
+        movement: float,
+        threshold: float,
+        ratio_score: float,
+        display_score: float,
+    ) -> None:
+        with self._lock:
+            self._movement_value = movement
+            self._movement_threshold = threshold
+            self._raw_movement_score = ratio_score
+            self._movement_score = min(MAX_UI_MOVEMENT_SCORE, max(0.0, display_score))
+
+    def get_ble_movement_metrics(self) -> dict:
+        with self._lock:
+            return {
+                "raw_movement_score": self._raw_movement_score,
+                "movement_value": self._movement_value,
+                "movement_threshold": self._movement_threshold,
+            }
 
     # ---- Location ---- #
     def set_location(self, x: Optional[float], y: Optional[float]) -> None:
@@ -258,7 +288,18 @@ class SharedState:
         with self._lock:
             for key, value in updates.items():
                 if key in allowed:
-                    self._settings[key] = value
+                    try:
+                        if key == "sensitivity":
+                            self._settings[key] = max(0.0, min(100.0, float(value)))
+                        elif key == "thresholdMode":
+                            if value in {"auto", "min", "manual"}:
+                                self._settings[key] = value
+                        elif key == "manualThreshold":
+                            self._settings[key] = None if value is None else max(MIN_BLE_THRESHOLD, float(value))
+                        else:
+                            self._settings[key] = value
+                    except (TypeError, ValueError):
+                        logger.warning("[Settings] Ignoring invalid %s=%r", key, value)
                 elif key == "lineToken" and isinstance(value, str):
                     # 儲存 token 但不放入廣播用的 _settings（避免 Token 外洩到前端）
                     self._line_token = value.strip()
@@ -415,7 +456,7 @@ def build_threshold_command(settings: dict, movement_window: deque) -> Optional[
         threshold = settings.get("manualThreshold")
         if threshold is None:
             return None
-        threshold = float(threshold)
+        threshold = max(MIN_BLE_THRESHOLD, float(threshold))
     else:
         if len(movement_window) < 20:
             state.set_ble_write_status("waiting_ble_data")
@@ -435,13 +476,41 @@ def build_threshold_command(settings: dict, movement_window: deque) -> Optional[
         sensitivity_factor = 1.3 - (sensitivity / 100.0) * 0.6
 
         if mode == "min":
-            threshold = float(np.max(samples)) * sensitivity_factor
+            # High-sensitivity mode: lower than auto, but still protected by
+            # MIN_BLE_THRESHOLD so the score does not jump to thousands.
+            threshold = float(np.percentile(samples, 75)) * 0.85 * sensitivity_factor
         else:
             threshold = float(np.percentile(samples, 95)) * 1.1 * sensitivity_factor
 
+    threshold = max(MIN_BLE_THRESHOLD, threshold)
     if threshold <= 0:
         return None
     return f"SET_THRESHOLD:{threshold:.6f}"
+
+
+def normalize_ble_display_score(movement_window: deque) -> float:
+    """Map recent BLE movement changes to a stable 0-100 UI score."""
+    if len(movement_window) < 5:
+        return 0.0
+
+    samples = np.array(movement_window, dtype=float)
+    samples = samples[np.isfinite(samples)]
+    if len(samples) < 5:
+        return 0.0
+
+    current = float(samples[-1])
+    baseline = float(np.median(samples))
+    p90 = float(np.percentile(samples, 90))
+    p98 = float(np.percentile(samples, 98))
+    mad = float(np.median(np.abs(samples - baseline)))
+
+    # Use robust spread rather than firmware threshold so a bad threshold cannot
+    # pin the dashboard at 100 forever.
+    noise_floor = max(0.005, mad * 1.4826, (p90 - baseline) * 0.5)
+    scale = max(0.05, noise_floor * 4.0, p98 - baseline)
+    activity = max(0.0, current - baseline)
+
+    return min(MAX_UI_MOVEMENT_SCORE, (activity / scale) * 100.0)
 
 
 # =========================================================================== #
@@ -567,17 +636,21 @@ async def _ble_reader_async() -> None:
                 movement = raw_movement
 
             movement_window.append(movement)
-            score = (movement / threshold * 100.0) if threshold > 0 else 0.0
-            state.set_movement_score(score)
+            effective_threshold = max(MIN_BLE_THRESHOLD, threshold)
+            raw_score = (movement / effective_threshold * 100.0) if effective_threshold > 0 else 0.0
+            ui_score = normalize_ble_display_score(movement_window)
+            is_motion = movement >= effective_threshold
+            state.set_ble_movement_metrics(movement, effective_threshold, raw_score, ui_score)
             state.set_data_source("hardware_ble")
             state.set_serial_online(True)
             if settings.get("algorithm") == "ml":
-                # Lightweight ML-style confidence gate for demo hardware without an embedded model file.
-                state.set_fall_detected(score >= 100.0 and movement >= threshold)
+                # Lightweight ML-style gate for demo hardware without an embedded model file.
+                # Use display dynamics, not raw ratio, because a stale BLE threshold can be too small.
+                state.set_fall_detected(ui_score >= 90.0 and is_motion)
             else:
-                state.set_fall_detected(fall_detector.update(score, movement >= threshold))
-            logger.info("[BLE] mvmt=%.4f thr=%.4f score=%.1f%% motion=%s",
-                        movement, threshold, score, movement >= threshold)
+                state.set_fall_detected(fall_detector.update(raw_score, is_motion))
+            logger.info("[BLE] mvmt=%.4f thr=%.4f raw_score=%.1f%% ui_score=%.1f motion=%s",
+                        movement, effective_threshold, raw_score, ui_score, is_motion)
 
     while not shutdown_event.is_set():
         device = None
@@ -890,8 +963,9 @@ async def ws_handler(websocket) -> None:
                 if settings.get("thresholdMode") == "manual" and settings.get("manualThreshold") is not None:
                     try:
                         threshold = float(settings["manualThreshold"])
-                        if threshold <= 0:
-                            raise ValueError("threshold must be positive")
+                        if threshold < MIN_BLE_THRESHOLD:
+                            raise ValueError(f"threshold must be >= {MIN_BLE_THRESHOLD}")
+                        threshold = max(MIN_BLE_THRESHOLD, threshold)
                         ble_command_queue.put(f"SET_THRESHOLD:{threshold:.6f}")
                     except (TypeError, ValueError) as exc:
                         state.set_ble_write_status(f"invalid_threshold: {exc}")
@@ -914,6 +988,7 @@ def build_broadcast_payload() -> str:
     包含 ai_analysis / location / timestamp。
     """
     score = state.get_movement_score()
+    ble_metrics = state.get_ble_movement_metrics()
     loc_x, loc_y = state.get_location()
     is_falling = state.is_falling()  # 由各 reader 根據 ESPectre 原生判斷設定
 
@@ -927,6 +1002,9 @@ def build_broadcast_payload() -> str:
         "ai_analysis": {
             "is_falling": is_falling,
             "movement_score": round(score, 2),
+            "raw_movement_score": round(ble_metrics["raw_movement_score"], 2),
+            "movement_value": round(ble_metrics["movement_value"], 6) if ble_metrics["movement_value"] is not None else None,
+            "movement_threshold": round(ble_metrics["movement_threshold"], 6) if ble_metrics["movement_threshold"] is not None else None,
         },
         "data_source": state.get_data_source(),
         "location": {
@@ -945,9 +1023,11 @@ def build_movement_payload() -> str:
     worker 會在收到 type='movement' 時直接透過 postMessage 轉發給 UI。
     """
     score = state.get_movement_score()
+    ble_metrics = state.get_ble_movement_metrics()
     payload = {
         "type": "movement",
         "score": round(score, 2),
+        "rawScore": round(ble_metrics["raw_movement_score"], 2),
         "isMotion": score > 2.0,  # 簡易判斷：分數 > 2 視為有活動
     }
     return json.dumps(payload, ensure_ascii=False)

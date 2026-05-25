@@ -26,7 +26,6 @@ import {
   WifiOff,
   LayoutGrid
 } from 'lucide-react';
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { useDeveloper } from '../contexts/DeveloperContext';
 import { useUser } from '../contexts/UserContext';
 import { useCSIWebSocket } from '../hooks/useCSIWebSocket';
@@ -116,31 +115,31 @@ export function RealtimeMonitoring() {
 
   const classifyActivity = (hist: number[], isFalling: boolean) => {
     if (hist.length === 0) return { label: '待機', confidence: 0, icon: '⏸️' };
-    const mean = hist.reduce((a, b) => a + b, 0) / hist.length;
-    const variance = hist.reduce((a, b) => a + (b - mean) ** 2, 0) / hist.length;
-    const peak = Math.max(...hist);
+
+    // Backend sends a normalized 0-100 score. Keep a defensive clamp here
+    // so stale servers or old cached packets cannot dominate the classifier.
+    const capped = hist.map(v => Math.min(100, Math.max(0, v)));
+    const mean = capped.reduce((a, b) => a + b, 0) / capped.length;
+    const variance = capped.reduce((a, b) => a + (b - mean) ** 2, 0) / capped.length;
+    const peak = Math.max(...capped);
     const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
     if (isFalling) {
-      return { label: '跌倒風險', confidence: clamp(88 + Math.round((peak - 80) * 0.2), 88, 99), icon: '⚠️' };
+      return { label: '跌倒風險', confidence: clamp(88 + Math.round((peak - 80) * 0.25), 88, 99), icon: '⚠️' };
     }
-    if (mean > 70) {
-      // 激烈活動：持續高分（score 可超過 100）
-      return { label: '激烈活動', confidence: clamp(72 + Math.round((mean - 70) * 0.4), 72, 95), icon: '🏃' };
+    if (mean > 82) {
+      return { label: '激烈活動', confidence: clamp(72 + Math.round((mean - 82) * 1.2), 72, 95), icon: '🏃' };
     }
-    if (mean > 30 && variance > 25) {
-      // 行走：中高分 + 明顯起伏
-      return { label: '行走', confidence: clamp(65 + Math.round(variance * 0.5), 65, 93), icon: '🚶' };
+    if (mean > 45 && variance > 80) {
+      return { label: '行走', confidence: clamp(65 + Math.round(variance * 0.2), 65, 93), icon: '🚶' };
     }
-    if (mean > 12 || variance > 15) {
-      // 輕微活動
-      return { label: '輕微活動', confidence: clamp(70 + Math.round(mean * 0.8), 70, 92), icon: '💺' };
+    if (mean > 18 || variance > 35) {
+      return { label: '輕微活動', confidence: clamp(70 + Math.round(mean * 0.7), 70, 92), icon: '💺' };
     }
-    if (mean > 2.5) {
-      // 靜坐
-      return { label: '靜坐', confidence: clamp(78 + Math.round(mean * 2), 78, 94), icon: '🪑' };
+    if (mean > 4) {
+      return { label: '靜坐', confidence: clamp(78 + Math.round(mean * 1.5), 78, 94), icon: '🪑' };
     }
-    return { label: '睡眠 / 靜止', confidence: clamp(82 + Math.round((2.5 - mean) * 4), 82, 96), icon: '😴' };
+    return { label: '睡眠 / 靜止', confidence: clamp(82 + Math.round((4 - mean) * 3), 82, 96), icon: '😴' };
   };
 
   const areas = user?.role === 'family' 
@@ -162,33 +161,36 @@ export function RealtimeMonitoring() {
       return;
     }
 
+    const prompt = `
+你是一位專業的智慧長照 AI 分析師。
+目前監控區域：${selectedArea}
+場景模式：${sceneMode === 'bathroom' ? '浴室' : '客廳'}
+偵測靈敏度：${Math.round(sensitivity * 100)}%
+當前偵測狀態：${isFallDetected ? '偵測到跌倒風險' : '正常活動中'}
+
+請針對當前的 Wi-Fi CSI 訊號模式進行深度分析。
+如果偵測到跌倒，請分析可能的嚴重程度與應對建議。
+如果狀態正常，請分析環境中的微小變動（如呼吸頻率、睡眠品質等）。
+
+請使用繁體中文回答，條列式輸出。
+    `.trim();
+
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      const response = await ai.models.generateContent({
-        model: "gemini-3.1-pro-preview",
-        contents: `
-          你是一位專業的智慧長照 AI 分析師。
-          目前監控區域：${selectedArea}
-          場景模式：${sceneMode === 'bathroom' ? '浴室' : '客廳'}
-          偵測靈敏度：${Math.round(sensitivity * 100)}%
-          當前偵測狀態：${isFallDetected ? '偵測到跌倒風險' : '正常活動中'}
-          
-          請針對當前的 Wi-Fi CSI 訊號模式進行深度分析。
-          如果偵測到跌倒，請分析可能的嚴重程度與應對建議。
-          如果狀態正常，請分析環境中的微小變動（如呼吸頻率、睡眠品質等）。
-          
-          請使用繁體中文回答。
-        `,
-        config: {
-          thinkingConfig: {
-            thinkingLevel: ThinkingLevel.HIGH
-          }
-        }
+      const response = await fetch('/api/ai-analysis', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt }),
       });
-      setThinkingResult(response.text || "無法取得分析結果。");
-    } catch (error) {
-      console.error("Thinking Mode Error:", error);
-      setThinkingResult("分析過程中發生錯誤，請稍後再試。");
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || `API 回應失敗 (${response.status})`);
+      }
+
+      setThinkingResult(result.text || "無法取得分析結果。");
+    } catch (err: unknown) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      setThinkingResult(`分析過程中發生錯誤：\n${errMsg}`);
     } finally {
       setIsThinking(false);
     }
@@ -245,7 +247,7 @@ export function RealtimeMonitoring() {
     }
 
     // 更新移動分數
-    const score = bridgeStatus.ai_analysis.movement_score;
+    const score = Math.min(100, Math.max(0, bridgeStatus.ai_analysis.movement_score));
     setMovementScore(Math.round(score));
 
     // 更新跌倒偵測
@@ -500,7 +502,7 @@ export function RealtimeMonitoring() {
                     className="transition-all duration-300" />
                 </svg>
                 <span className="absolute inset-0 flex items-center justify-center text-xs font-mono font-bold text-slate-800">
-                  {movementScore > 99 ? `${movementScore}` : movementScore}
+                  {movementScore}
                 </span>
               </div>
               <div>
