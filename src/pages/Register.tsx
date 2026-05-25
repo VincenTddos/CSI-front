@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Page } from '../types';
 import { Activity, ArrowLeft, Building2, HeartPulse, ShieldCheck, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
+import { GoogleLoginButton } from '../components/GoogleLoginButton';
 
 import { useNavigate } from 'react-router-dom';
 
@@ -255,6 +256,16 @@ export function Register() {
             {loading ? '註冊中...' : '完成註冊'}
           </button>
         </form>
+
+        {/* Google 登入分隔線 */}
+        <div className="flex items-center gap-3 my-6">
+          <div className="flex-1 h-px bg-slate-200" />
+          <span className="text-xs text-slate-400 font-medium">或直接使用</span>
+          <div className="flex-1 h-px bg-slate-200" />
+        </div>
+
+        {/* Google 登入（可跳過填寫表單）*/}
+        <GoogleLoginButton />
       </div>
     </div>
   );

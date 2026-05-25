@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Page, UserRole } from '../types';
 import { Activity, Lock, User, AlertCircle } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
+import { GoogleLoginButton } from '../components/GoogleLoginButton';
 
 import { useNavigate } from 'react-router-dom';
 
@@ -121,7 +122,17 @@ export function Login() {
           </button>
         </form>
 
-        <div className="mt-8 text-center">
+        {/* Google 登入分隔線 */}
+        <div className="flex items-center gap-3 my-6">
+          <div className="flex-1 h-px bg-slate-200" />
+          <span className="text-xs text-slate-400 font-medium">或</span>
+          <div className="flex-1 h-px bg-slate-200" />
+        </div>
+
+        {/* Google 登入按鈕 */}
+        <GoogleLoginButton />
+
+        <div className="mt-6 text-center">
           <p className="text-sm text-slate-500">
             尚未有帳號？{' '}
             <button
