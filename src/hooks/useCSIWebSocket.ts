@@ -1,0 +1,89 @@
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { CSIDataPacket, MovementData, CoreBridgePacket, LocationData, SystemSettingsState } from '../types';
+
+function getDefaultWebSocketUrl() {
+  const host = window.location.hostname || 'localhost';
+  return `ws://${host}:8765`;
+}
+
+export function useCSIWebSocket(url: string = getDefaultWebSocketUrl()) {
+  const [isConnected, setIsConnected] = useState(false);
+  const [lastMessage, setLastMessage] = useState<CSIDataPacket | null>(null);
+  const [movementMetrics, setMovementMetrics] = useState<MovementData>({ score: 0, isMotion: false });
+  const [bridgeStatus, setBridgeStatus] = useState<CoreBridgePacket | null>(null);
+  const [locationData, setLocationData] = useState<LocationData>({ x: null, y: null, timestamp: '' });
+  const [lastSettingsAck, setLastSettingsAck] = useState<any>(null);
+  const workerRef = useRef<Worker | null>(null);
+
+  useEffect(() => {
+    // 建立 Worker 而非直接建立 WebSocket
+    // 注意: Vite 原生支援 Worker 導入，無需額外配置
+    const worker = new Worker(new URL('../workers/csi.worker.ts', import.meta.url), { type: 'module' });
+    workerRef.current = worker;
+
+    // 監聽 Worker 回傳的訊息
+    worker.onmessage = (event) => {
+      const { type, payload } = event.data;
+
+      if (type === 'STATUS') {
+        setIsConnected(payload.isConnected);
+
+      } else if (type === 'DATA') {
+        // payload 可能包含 { raw: CSIDataPacket, metrics: MovementData }
+        if (payload.raw) {
+          setLastMessage(payload.raw);
+        }
+        if (payload.metrics) {
+          setMovementMetrics(payload.metrics);
+        }
+
+      } else if (type === 'BRIDGE_STATUS') {
+        // core_bridge.py 的完整狀態封包 (含三角定位與 AI 分析)
+        const packet = payload as CoreBridgePacket;
+        setBridgeStatus(packet);
+
+        // 更新 movement metrics
+        if (packet.ai_analysis) {
+          setMovementMetrics({
+            score: packet.ai_analysis.movement_score,
+            isMotion: packet.ai_analysis.movement_score > 15,
+          });
+        }
+
+        // 更新定位座標
+        if (packet.location) {
+          setLocationData({
+            x: packet.location.raw_x,
+            y: packet.location.raw_y,
+            timestamp: packet.timestamp,
+          });
+        }
+
+      } else if (type === 'ERROR') {
+        console.error('CSI Worker Error:', payload);
+      } else if (type === 'SETTINGS_ACK') {
+        setLastSettingsAck(payload);
+      }
+    };
+
+    // 發送連線指令給 Worker
+    worker.postMessage({ type: 'CONNECT', url });
+
+    return () => {
+      // 元件卸載時終止 Worker
+      worker.terminate();
+    };
+  }, [url]);
+
+  const sendSettings = useCallback((settings: Partial<SystemSettingsState>) => {
+    workerRef.current?.postMessage({
+      type: 'SEND_JSON',
+      payload: {
+        type: 'settings_update',
+        payload: settings,
+      },
+    });
+  }, []);
+
+  return { isConnected, lastMessage, movementMetrics, bridgeStatus, locationData, sendSettings, lastSettingsAck };
+}
