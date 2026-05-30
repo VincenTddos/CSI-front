@@ -114,6 +114,12 @@ def parse_args():
         default=False,
         help="Use BLE instead of serial (requires bleak, ESPectre v2.7.0+)",
     )
+    parser.add_argument(
+        "--ble-address",
+        type=str,
+        default=None,
+        help="BLE device address to connect first (e.g. E8:F6:0A:85:9D:02)",
+    )
     return parser.parse_args()
 
 
@@ -150,6 +156,7 @@ SIMULATE_MODE: bool = False
 
 # -- BLE 模式旗標 (由命令列參數控制) --
 BLE_MODE: bool = False
+BLE_ADDRESS: Optional[str] = None
 
 # -- ESPectre BLE GATT UUIDs (v2.7.0+) --
 BLE_SERVICE_UUID      = "d33ff46b-2203-4775-bc6f-b3a2c36af8f0"
@@ -559,15 +566,20 @@ def serial_reader_thread() -> None:
                 match = score_pattern.search(line)
                 if match:
                     try:
-                        score = float(match.group(1)) * 100.0
+                        # mvmt 是 movement/threshold 比值，已是相對分數
+                        # 乘 100 轉成百分比 (0-100+)，前端再 clamp 到 0-100
+                        raw_mvmt = float(match.group(1))
+                        score = min(100.0, raw_mvmt * 100.0)
                         state.set_movement_score(score)
+                        state.set_data_source("hardware_serial")
+                        state.set_serial_online(True)
                         # ESPectre 的 MOTION 只代表一般活動，不等同跌倒。
                         # 跌倒風險改由 movement score 的突發尖峰判定，避免走動就觸發警報。
                         m = motion_pattern.search(line)
                         is_motion = m.group(1).upper() == "MOTION" if m else None
                         state.set_fall_detected(fall_detector.update(score, is_motion))
-                        logger.debug("[Serial] mvmt=%.2f score=%.1f motion=%s",
-                                     float(match.group(1)), score,
+                        logger.info("[Serial] mvmt=%.4f score=%.1f motion=%s",
+                                     raw_mvmt, score,
                                      m.group(1) if m else "?")
                     except ValueError:
                         logger.warning("[Serial] Cannot parse mvmt: %s", match.group(1))
@@ -655,12 +667,17 @@ async def _ble_reader_async() -> None:
     while not shutdown_event.is_set():
         device = None
         try:
+            if BLE_ADDRESS:
+                logger.info("[BLE] Looking for configured device: %s", BLE_ADDRESS)
+                device = await BleakScanner.find_device_by_address(BLE_ADDRESS, timeout=10.0)
+
             logger.info("[BLE] Scanning for ESPectre (10s)...")
             # 先用 service UUID 掃描，找不到再用裝置名稱 fallback
-            device = await BleakScanner.find_device_by_filter(
-                lambda d, adv: BLE_SERVICE_UUID.lower() in [s.lower() for s in (adv.service_uuids or [])],
-                timeout=10.0,
-            )
+            if device is None:
+                device = await BleakScanner.find_device_by_filter(
+                    lambda d, adv: BLE_SERVICE_UUID.lower() in [s.lower() for s in (adv.service_uuids or [])],
+                    timeout=10.0,
+                )
             if device is None:
                 device = await BleakScanner.find_device_by_name("ESPectre", timeout=5.0)
 
@@ -687,7 +704,7 @@ async def _ble_reader_async() -> None:
                 logger.info("[BLE] Subscribed to telemetry characteristic")
 
                 while not shutdown_event.is_set() and client.is_connected:
-                    if time.time() - last_telemetry_at > 6.0:
+                    if time.time() - last_telemetry_at > 20.0:
                         logger.warning("[BLE] Telemetry timeout, reconnecting...")
                         state.set_serial_online(False)
                         state.set_movement_score(0.0)
@@ -1137,12 +1154,13 @@ def main() -> None:
       2. WiFi Location Thread (daemon)  -- 或模擬版
       3. WebSocket Server (async main loop)
     """
-    global SERIAL_PORT, WS_PORT, SIMULATE_MODE, BLE_MODE
+    global SERIAL_PORT, WS_PORT, SIMULATE_MODE, BLE_MODE, BLE_ADDRESS
 
     # ---- 解析命令列參數 ---- #
     args = parse_args()
     SIMULATE_MODE = args.simulate
     BLE_MODE = args.ble
+    BLE_ADDRESS = args.ble_address
     if args.ws_port:
         WS_PORT = args.ws_port
 
@@ -1167,6 +1185,8 @@ def main() -> None:
             sys.exit(1)
         serial_target = ble_reader_thread
         logger.info("[Main] Using BLE (ESPectre service UUID: %s)", BLE_SERVICE_UUID)
+        if BLE_ADDRESS:
+            logger.info("[Main] Preferred BLE address: %s", BLE_ADDRESS)
     else:
         serial_target = serial_reader_thread
         # 自動偵測序列埠
