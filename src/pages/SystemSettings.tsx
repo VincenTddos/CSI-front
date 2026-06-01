@@ -4,6 +4,8 @@ import { SettingsModal } from '../components/SettingsModal';
 import { cn } from '../lib/utils';
 import { useCSIWebSocket } from '../hooks/useCSIWebSocket';
 import { SystemSettingsState } from '../types';
+import { listAlerts } from '../services/alertsService';
+import { exportToCsv, exportToJson, timestampedName } from '../services/exportService';
 
 type DetectionAlgorithm = 'mvs' | 'ml';
 type ThresholdMode = 'auto' | 'min' | 'manual';
@@ -76,6 +78,25 @@ export function SystemSettings() {
     smoothingEnabled,
   };
 
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async (format: 'csv' | 'json') => {
+    setExporting(true);
+    try {
+      const alerts = await listAlerts(1000);
+      if (format === 'csv') {
+        exportToCsv(alerts as unknown as Record<string, unknown>[], timestampedName('wicare_alerts', 'csv'));
+      } else {
+        exportToJson({ exported_at: new Date().toISOString(), count: alerts.length, alerts }, timestampedName('wicare_alerts', 'json'));
+      }
+    } catch (err) {
+      console.error('[Export] 失敗', err);
+      alert('匯出失敗：' + (err instanceof Error ? err.message : String(err)));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const flash = () => {
     if (!isManualThresholdValid) return;
     if (thresholdMode === 'manual') {
@@ -136,12 +157,12 @@ export function SystemSettings() {
               className={cn("p-4 rounded-xl border text-left transition-all relative overflow-hidden",
                 algorithm === 'ml' ? "bg-purple-50 border-purple-400 ring-2 ring-purple-400/20" : "bg-slate-50 border-slate-200 hover:border-slate-300"
               )}>
-              <span className="absolute top-1 right-1 text-[8px] bg-purple-100 text-purple-600 px-1.5 py-0.5 rounded-full font-bold">實驗性</span>
+              <span className="absolute top-1 right-1 text-[8px] bg-purple-100 text-purple-600 px-1.5 py-0.5 rounded-full font-bold">規則閘門</span>
               <div className="flex items-center gap-2 mb-2">
                 <Zap className="w-4 h-4 text-purple-500" />
                 <span className="text-sm font-bold text-slate-800">ML 模式</span>
               </div>
-              <p className="text-[10px] text-slate-500 leading-relaxed">Neural Network MLP 12→16→8→1 — 免校正，3 秒啟動，F1 97-100%</p>
+              <p className="text-[10px] text-slate-500 leading-relaxed">規則式信心閘門 — 免校正、即時啟動；神經網路 (MLP) 為未來工作，尚未內建模型</p>
             </button>
           </div>
 
@@ -151,15 +172,14 @@ export function SystemSettings() {
               <thead><tr className="bg-slate-50">
                 <th className="text-left px-3 py-1.5 text-slate-400 font-bold"></th>
                 <th className="text-center px-3 py-1.5 text-[#007AFF] font-bold">MVS</th>
-                <th className="text-center px-3 py-1.5 text-purple-500 font-bold">ML</th>
+                <th className="text-center px-3 py-1.5 text-purple-500 font-bold">ML 閘門</th>
               </tr></thead>
               <tbody className="divide-y divide-slate-50">
                 <tr><td className="px-3 py-1.5 text-slate-500">需要校正</td><td className="text-center">✅ 10.5 秒</td><td className="text-center">❌ 免校正</td></tr>
-                <tr><td className="px-3 py-1.5 text-slate-500">子載波選擇</td><td className="text-center">NBVI 自動</td><td className="text-center">12 個固定</td></tr>
-                <tr><td className="px-3 py-1.5 text-slate-500">閾值</td><td className="text-center">自適應 P95×1.1</td><td className="text-center">固定 0.5</td></tr>
-                <tr><td className="px-3 py-1.5 text-slate-500">F1 Score</td><td className="text-center">&gt;96%</td><td className="text-center font-bold text-purple-600">97-100%</td></tr>
-                <tr><td className="px-3 py-1.5 text-slate-500">啟動時間</td><td className="text-center">~10.5s</td><td className="text-center font-bold text-purple-600">~3s</td></tr>
-                <tr><td className="px-3 py-1.5 text-slate-500">參數量</td><td className="text-center">—</td><td className="text-center">353 (~1.4KB)</td></tr>
+                <tr><td className="px-3 py-1.5 text-slate-500">判定方式</td><td className="text-center">NBVI 自適應</td><td className="text-center">固定比例閘門</td></tr>
+                <tr><td className="px-3 py-1.5 text-slate-500">閾值</td><td className="text-center">自適應 P95×1.1</td><td className="text-center">score≥100%</td></tr>
+                <tr><td className="px-3 py-1.5 text-slate-500">啟動時間</td><td className="text-center">~10.5s</td><td className="text-center font-bold text-purple-600">即時</td></tr>
+                <tr><td className="px-3 py-1.5 text-slate-500">神經網路</td><td className="text-center">—</td><td className="text-center text-slate-400">未來工作</td></tr>
               </tbody>
             </table>
           </div>
@@ -173,8 +193,9 @@ export function SystemSettings() {
 
           {algorithm === 'ml' ? (
             <div className="p-4 bg-purple-50 border border-purple-100 rounded-lg text-xs text-purple-700">
-              <p className="font-bold mb-1">ML 模式使用固定閾值</p>
-              <p>ML 偵測器使用 sigmoid 輸出，機率 &gt; 0.5 判定為 MOTION，無需手動調整。</p>
+              <p className="font-bold mb-1">ML 模式：規則式信心閘門</p>
+              <p>目前以固定比例閘門（movement≥threshold 且分數≥100%）判定，無需手動調整。
+              真正的神經網路 (MLP) 模型列為未來工作，尚未內建。</p>
             </div>
           ) : (
             <>
@@ -343,21 +364,24 @@ export function SystemSettings() {
               <Download className="w-4 h-4 text-slate-500" /> 資料匯出格式
             </h2>
             <div className="grid grid-cols-2 gap-2">
-              <button className="p-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 transition-colors text-left">
+              <button onClick={() => handleExport('csv')} disabled={exporting}
+                className="p-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 disabled:opacity-50 transition-colors text-left">
                 <div className="flex items-center gap-2 mb-1">
                   <FileText className="w-4 h-4 text-green-600" />
                   <span className="text-xs font-bold text-slate-700">CSV</span>
                 </div>
-                <p className="text-[10px] text-slate-400">子載波振幅 + 跌倒標記</p>
+                <p className="text-[10px] text-slate-400">警報事件記錄（Excel 可開）</p>
               </button>
-              <button className="p-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 transition-colors text-left">
+              <button onClick={() => handleExport('json')} disabled={exporting}
+                className="p-3 rounded-lg border border-slate-200 bg-slate-50 hover:bg-blue-50 hover:border-blue-200 disabled:opacity-50 transition-colors text-left">
                 <div className="flex items-center gap-2 mb-1">
                   <FileJson className="w-4 h-4 text-amber-600" />
                   <span className="text-xs font-bold text-slate-700">JSON</span>
                 </div>
-                <p className="text-[10px] text-slate-400">結構化健康紀錄 + 警報</p>
+                <p className="text-[10px] text-slate-400">結構化警報紀錄</p>
               </button>
             </div>
+            {exporting && <p className="text-[10px] text-slate-400 mt-2">匯出中…</p>}
           </div>
         </div>
       </div>

@@ -70,8 +70,8 @@ export function Register() {
     setLoading(true);
 
     // Simulate network delay
-    setTimeout(() => {
-      const result = register({
+    setTimeout(async () => {
+      const result = await register({
         realName,
         username,
         password,

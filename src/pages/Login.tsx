@@ -33,8 +33,8 @@ export function Login() {
     }
 
     // Simulate network delay
-    setTimeout(() => {
-      const result = login(username, password, role);
+    setTimeout(async () => {
+      const result = await login(username, password, role);
       if (result.success) {
         setUsername('');
         setPassword('');

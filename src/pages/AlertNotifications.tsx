@@ -2,10 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { BellRing, Check, X, Clock, AlertTriangle, MessageSquare, Filter, Plus, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useUser } from '../contexts/UserContext';
+import {
+  listAlerts, createAlert, updateAlertStatus, deleteAlert, subscribeNewAlerts,
+} from '../services/alertsService';
+import type { FallEventRow } from '../services/database.types';
 
-const ALERTS_STORAGE_KEY = 'csi_alerts';
-
-// ===== Types =====
+// ===== Types（顯示用）=====
 interface AlertRecord {
   id: string;
   time: string;
@@ -16,64 +18,67 @@ interface AlertRecord {
   feedbackNote?: string;
 }
 
-const defaultAlerts: AlertRecord[] = [
-  { id: 'a1', time: '2026/03/27 11:42', room: '606 號房 - 浴室', type: '跌倒風險', confidence: '92%', status: 'pending' },
-  { id: 'a2', time: '2026/03/26 20:15', room: '503 號房 - 床邊', type: '異常震盪', confidence: '85%', status: 'confirmed' },
-  { id: 'a3', time: '2026/03/26 14:30', room: '交誼廳', type: '跌倒風險', confidence: '78%', status: 'false_alarm' },
-  { id: 'a4', time: '2026/03/25 09:00', room: '502 號房 - 浴室', type: '異常震盪', confidence: '88%', status: 'confirmed' },
-  { id: 'a5', time: '2026/03/24 16:45', room: '611 號房 - 走廊', type: '跌倒風險', confidence: '71%', status: 'false_alarm' },
-  { id: 'a6', time: '2026/03/24 03:12', room: '609 號房 - 床邊', type: '異常震盪', confidence: '95%', status: 'pending' },
-];
-
-function loadAlerts(): AlertRecord[] {
-  const saved = localStorage.getItem(ALERTS_STORAGE_KEY);
-  if (saved) { try { return JSON.parse(saved); } catch { /* ignore */ } }
-  return defaultAlerts;
-}
-
-function saveAlerts(alerts: AlertRecord[]) {
-  localStorage.setItem(ALERTS_STORAGE_KEY, JSON.stringify(alerts));
+// FallEventRow（資料庫）→ AlertRecord（顯示）
+function rowToRecord(r: FallEventRow): AlertRecord {
+  const d = new Date(r.detected_at);
+  const time = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const room = (r.location_x != null && r.location_y != null)
+    ? `(${r.location_x.toFixed(1)}, ${r.location_y.toFixed(1)}) m`
+    : '感測區';
+  return {
+    id: r.id,
+    time,
+    room,
+    type: r.event_type || '跌倒風險',
+    confidence: r.confidence != null ? `${Math.round(r.confidence)}%` : 'N/A',
+    status: r.status,
+    feedbackNote: r.feedback_note ?? undefined,
+  };
 }
 
 type FilterType = 'all' | 'pending' | 'confirmed' | 'false_alarm';
 
 export function AlertNotifications() {
   const { user } = useUser();
-  const [alerts, setAlerts] = useState<AlertRecord[]>(loadAlerts);
+  const [alerts, setAlerts] = useState<AlertRecord[]>([]);
   const [filterStatus, setFilterStatus] = useState<FilterType>('all');
   const [showSavedMsg, setShowSavedMsg] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newAlert, setNewAlert] = useState({ room: '', type: '跌倒風險', confidence: '80%' });
 
-  useEffect(() => { saveAlerts(alerts); }, [alerts]);
+  // 載入 + 即時訂閱新警報
+  useEffect(() => {
+    listAlerts().then(rows => setAlerts(rows.map(rowToRecord))).catch(e => console.error('[Alerts]', e));
+    const unsub = subscribeNewAlerts(row => setAlerts(prev => [rowToRecord(row), ...prev]));
+    return unsub;
+  }, []);
 
-  const handleConfirm = (id: string) => {
+  const handleConfirm = async (id: string) => {
+    await updateAlertStatus(id, 'confirmed');
     setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: 'confirmed' as const } : a));
     flash();
   };
 
-  const handleFalseAlarm = (id: string) => {
+  const handleFalseAlarm = async (id: string) => {
+    await updateAlertStatus(id, 'false_alarm');
     setAlerts(prev => prev.map(a => a.id === id ? { ...a, status: 'false_alarm' as const } : a));
     flash();
   };
 
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
+    await deleteAlert(id);
     setAlerts(prev => prev.filter(a => a.id !== id));
   };
 
-  const handleAddAlert = () => {
+  const handleAddAlert = async () => {
     if (!newAlert.room.trim()) return;
-    const now = new Date();
-    const timeStr = `${now.getFullYear()}/${String(now.getMonth()+1).padStart(2,'0')}/${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
-    const alert: AlertRecord = {
-      id: 'a' + Date.now().toString(36),
-      time: timeStr,
-      room: newAlert.room,
-      type: newAlert.type,
-      confidence: newAlert.confidence,
-      status: 'pending'
-    };
-    setAlerts(prev => [alert, ...prev]);
+    const created = await createAlert({
+      event_type: newAlert.type,
+      confidence: parseInt(newAlert.confidence, 10) || 80,
+      status: 'pending',
+      detected_at: new Date().toISOString(),
+    });
+    setAlerts(prev => [rowToRecord(created), ...prev]);
     setShowAddModal(false);
     setNewAlert({ room: '', type: '跌倒風險', confidence: '80%' });
     flash();

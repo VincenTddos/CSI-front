@@ -98,9 +98,9 @@ export function GoogleLoginButton({ onSuccess }: Props) {
 
       gis().accounts.id.initialize({
         client_id: clientId,
-        callback: (response: { credential: string }) => {
+        callback: async (response: { credential: string }) => {
           setError('');
-          const result = loginWithGoogle(response.credential);
+          const result = await loginWithGoogle(response.credential);
 
           if (result.success) {
             onSuccess?.();
@@ -145,8 +145,8 @@ export function GoogleLoginButton({ onSuccess }: Props) {
   }, [clientId]);
 
   /** 使用者在彈窗選完角色後呼叫 */
-  const handleRoleSelect = (role: UserRole) => {
-    const result = completeGoogleLogin(pendingCredentialRef.current, role);
+  const handleRoleSelect = async (role: UserRole) => {
+    const result = await completeGoogleLogin(pendingCredentialRef.current, role);
     setPendingRole(null);
     if (result.success) {
       onSuccess?.();

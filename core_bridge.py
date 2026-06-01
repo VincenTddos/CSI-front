@@ -457,6 +457,97 @@ def send_line_notify(token: str, message: str) -> None:
         logger.error("[LINE] 推播失敗: %s", exc)
 
 
+# =========================================================================== #
+#  Supabase 雲端推送 (使用內建 urllib + service_role 金鑰；env 未設定則停用)
+#  支援多裝置：每台 core_bridge 以各自的 WICARE_DEVICE_ID 上傳資料。
+# =========================================================================== #
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+WICARE_DEVICE_ID = os.environ.get("WICARE_DEVICE_ID", "")
+SUPABASE_ENABLED = bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+
+
+def _supabase_request(method: str, path: str, body: Optional[dict] = None,
+                      prefer: Optional[str] = None) -> None:
+    """對 Supabase REST (PostgREST) 發出請求；失敗僅記錄不拋出。"""
+    if not SUPABASE_ENABLED:
+        return
+    import urllib.request
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/{path}"
+        data = json.dumps(body).encode("utf-8") if body is not None else None
+        headers = {
+            "apikey": SUPABASE_SERVICE_ROLE_KEY,
+            "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+            "Content-Type": "application/json",
+        }
+        if prefer:
+            headers["Prefer"] = prefer
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            logger.debug("[Supabase] %s %s → %s", method, path, resp.status)
+    except Exception as exc:
+        logger.warning("[Supabase] %s %s 失敗: %s", method, path, exc)
+
+
+def supabase_insert_fall_event(score: float, loc_x, loc_y) -> None:
+    """跌倒事件寫入 fall_events 表。"""
+    _supabase_request("POST", "fall_events", {
+        "device_id": WICARE_DEVICE_ID or None,
+        "movement_score": round(score, 2),
+        "location_x": round(loc_x, 2) if loc_x is not None else None,
+        "location_y": round(loc_y, 2) if loc_y is not None else None,
+        "event_type": "跌倒風險",
+        "confidence": min(99.0, round(score, 2)),
+        "status": "pending",
+        "detected_at": datetime.now(timezone.utc).isoformat(),
+    }, prefer="return=minimal")
+
+
+def supabase_upsert_activity(bucket_iso: str, level: str, avg_score: float,
+                             max_score: float, count: int) -> None:
+    """每分鐘活動彙整 upsert 到 activity_summaries（依 device_id+bucket_time 唯一）。"""
+    _supabase_request(
+        "POST",
+        "activity_summaries?on_conflict=device_id,bucket_time",
+        {
+            "device_id": WICARE_DEVICE_ID or None,
+            "bucket_time": bucket_iso,
+            "activity_level": level,
+            "avg_score": round(avg_score, 2),
+            "max_score": round(max_score, 2),
+            "sample_count": count,
+        },
+        prefer="resolution=merge-duplicates,return=minimal",
+    )
+
+
+def classify_activity_level(avg_score: float) -> str:
+    """將平均移動分數對應到 6 級活動狀態（與前端 HAR 分類一致）。"""
+    if avg_score < 5:
+        return "睡眠"
+    if avg_score < 15:
+        return "靜坐"
+    if avg_score < 35:
+        return "輕微活動"
+    if avg_score < 65:
+        return "行走"
+    return "激烈活動"
+
+
+def supabase_device_heartbeat(status: str = "online") -> None:
+    """更新 devices.last_seen_at 心跳。"""
+    if not (SUPABASE_ENABLED and WICARE_DEVICE_ID):
+        return
+    _supabase_request(
+        "PATCH",
+        f"devices?id=eq.{WICARE_DEVICE_ID}",
+        {"status": status, "last_seen_at": datetime.now(timezone.utc).isoformat()},
+        prefer="return=minimal",
+    )
+
+
 def build_threshold_command(settings: dict, movement_window: deque) -> Optional[str]:
     mode = settings.get("thresholdMode", "auto")
     if mode == "manual":
@@ -1057,25 +1148,52 @@ async def broadcast_loop() -> None:
     同時負責偵測跌倒上升邊緣並觸發 LINE Notify 推播。
     """
     logger.info("[WS] Broadcast loop started (%.1f Hz)", 1.0 / WS_BROADCAST_INTERVAL)
+    if SUPABASE_ENABLED:
+        logger.info("[Supabase] 雲端推送已啟用 (device_id=%s)", WICARE_DEVICE_ID or "未設定")
     loop = asyncio.get_event_loop()
 
+    # 活動彙整累加器 (每分鐘 upsert 一次) 與心跳計時
+    act_scores: list[float] = []
+    act_bucket = int(time.time() // 60)
+    last_heartbeat = 0.0
+
     while True:
-        # ---- LINE Notify 邊緣偵測 (每個廣播週期呼叫一次) ---- #
+        score_now = state.get_movement_score()
+
+        # ---- 跌倒上升邊緣：LINE 推播 + 雲端事件 ---- #
         line_token = state.check_and_arm_line_notify()
+        loc_x, loc_y = state.get_location()
         if line_token:
-            score = state.get_movement_score()
-            loc_x, loc_y = state.get_location()
             loc_str = f"{loc_x:.1f}, {loc_y:.1f} m" if loc_x is not None else "未知"
             msg = (
                 f"\n⚠️ Wi-Care 跌倒警報\n"
-                f"移動分數：{score:.1f}\n"
+                f"移動分數：{score_now:.1f}\n"
                 f"位置：{loc_str}\n"
                 f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"請立即確認被照護者狀況！"
             )
             # 在背景執行緒發送，不阻塞事件迴圈
             loop.run_in_executor(None, send_line_notify, line_token, msg)
-            logger.info("[LINE] 跌倒警報已排入推播佇列 (score=%.1f)", score)
+            logger.info("[LINE] 跌倒警報已排入推播佇列 (score=%.1f)", score_now)
+            if SUPABASE_ENABLED:
+                loop.run_in_executor(None, supabase_insert_fall_event, score_now, loc_x, loc_y)
+
+        # ---- 雲端：每分鐘活動彙整 + 裝置心跳 ---- #
+        if SUPABASE_ENABLED:
+            act_scores.append(score_now)
+            now_min = int(time.time() // 60)
+            if now_min != act_bucket and act_scores:
+                avg_s = sum(act_scores) / len(act_scores)
+                max_s = max(act_scores)
+                bucket_iso = datetime.fromtimestamp(act_bucket * 60, timezone.utc).isoformat()
+                loop.run_in_executor(None, supabase_upsert_activity,
+                                     bucket_iso, classify_activity_level(avg_s),
+                                     avg_s, max_s, len(act_scores))
+                act_scores = []
+                act_bucket = now_min
+            if time.time() - last_heartbeat >= 30.0:
+                loop.run_in_executor(None, supabase_device_heartbeat, "online")
+                last_heartbeat = time.time()
 
         if connected_clients:
             # 組裝兩種封包

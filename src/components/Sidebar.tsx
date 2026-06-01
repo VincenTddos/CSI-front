@@ -64,6 +64,7 @@ export function Sidebar() {
     { id: 'routine-checkup', label: '日常檢查', icon: ClipboardList, roles: ['admin', 'medical'] },
     { id: 'personnel', label: '人員管理', icon: Users, roles: ['admin'] },
     { id: 'health', label: '健康報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
+    { id: 'analytics', label: '管理報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
     { id: 'alerts', label: '警報通知', icon: BellRing, roles: ['admin', 'medical', 'family'] },
     { id: 'settings', label: '系統設定', icon: Settings, roles: ['admin', 'medical'] },
   ] as const;

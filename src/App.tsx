@@ -15,7 +15,8 @@ import {
   RoutineCheckup,
   FamilyHealthLog,
   SubcarrierAnalyzer,
-  RoomOccupancy
+  RoomOccupancy,
+  Analytics
 } from './pages';
 import { DeveloperProvider, useDeveloper } from './contexts/DeveloperContext';
 import { UserProvider, useUser } from './contexts/UserContext';
@@ -57,6 +58,7 @@ function AppRoutes() {
           <Route path="realtime" element={<RealtimeMonitoring />} />
           <Route path="alerts" element={<AlertNotifications />} />
           <Route path="health" element={<HealthReports />} />
+          <Route path="analytics" element={<Analytics />} />
           <Route path="settings" element={<SystemSettings />} />
           <Route path="patients" element={<CareRecipients />} />
           <Route path="daily-health" element={<DailyHealth />} />
