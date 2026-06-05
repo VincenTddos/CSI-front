@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { isDeveloperIdentity } from '../lib/roles';
 
 export interface RegisterData {
   realName: string;
@@ -15,18 +16,13 @@ interface StoredUser extends RegisterData {
   id: string;
 }
 
-export type GoogleLoginResult =
-  | { success: true; message: string }
-  | { success: false; message: string; needsRole?: false }
-  | { success: false; needsRole: true; credential: string; googleName: string; googlePicture: string };
+interface AuthResult { success: boolean; message: string }
 
 interface UserContextType {
   user: User | null;
-  login: (username: string, password: string, role: UserRole) => Promise<{ success: boolean; message: string }>;
-  register: (data: RegisterData) => Promise<{ success: boolean; message: string }>;
-  loginWithGoogle: (credential: string) => Promise<GoogleLoginResult>;
-  completeGoogleLogin: (credential: string, role: UserRole) => Promise<{ success: boolean; message: string }>;
-  switchRole: (newRole: UserRole) => Promise<void>;
+  login: (username: string, password: string) => Promise<AuthResult>;
+  register: (data: RegisterData) => Promise<AuthResult>;
+  loginWithGoogle: (credential: string) => Promise<AuthResult>;
   logout: () => Promise<void>;
 }
 
@@ -37,6 +33,13 @@ const UserContext = createContext<UserContextType | undefined>(undefined);
 const SYNTH_DOMAIN = 'wicare.local';
 const toEmail = (username: string) =>
   username.includes('@') ? username : `${username.trim().toLowerCase()}@${SYNTH_DOMAIN}`;
+// 從合成 Email 反推帳號（供開發者帳號名單比對）
+const usernameFromEmail = (email?: string | null) =>
+  email && email.endsWith(`@${SYNTH_DOMAIN}`) ? email.slice(0, -(`@${SYNTH_DOMAIN}`.length)) : undefined;
+
+// 套用開發者最高權限：身分命中名單則覆寫為 'developer'
+const applyDeveloperOverride = (role: UserRole, email?: string | null, username?: string | null): UserRole =>
+  isDeveloperIdentity(email, username ?? usernameFromEmail(email)) ? 'developer' : role;
 
 // 依角色補上 demo 用的指派房間 / 綁定住民名稱（沿用原行為）
 function decorateUser(base: Omit<User, 'assignedRooms' | 'patientName'>): User {
@@ -54,18 +57,24 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     return saved ? JSON.parse(saved) : null;
   });
 
-  // ---- Supabase 模式：由 profiles 表組出 User ----
-  const buildUserFromProfile = async (userId: string, fallbackName: string, avatar?: string): Promise<User | null> => {
+  // ---- Supabase 模式：由 profiles 表組出 User（套用開發者覆寫）----
+  const buildUserFromProfile = async (
+    userId: string, email: string | null, fallbackName: string, avatar?: string,
+  ): Promise<User | null> => {
     const { data, error } = await supabase
       .from('profiles')
       .select('real_name, role, avatar_url')
       .eq('id', userId)
       .single();
     if (error || !data) return null;
+
+    // 開發者最高權限：UI 立即套用；DB 角色由 0002 的 signup trigger + 一次性 UPDATE 持久化
+    // （RLS 防自我提權，故此處不從前端改 DB role）
+    const role = applyDeveloperOverride((data.role as UserRole) ?? 'family', email);
     return decorateUser({
       id: userId,
       name: data.real_name || fallbackName,
-      role: (data.role as UserRole) ?? 'medical',
+      role,
       avatar: avatar || data.avatar_url || `https://picsum.photos/seed/${data.real_name}/150/150`,
     });
   };
@@ -75,37 +84,28 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     if (!isSupabaseConfigured) return;
     let active = true;
 
-    supabase.auth.getSession().then(async ({ data }) => {
-      const session = data.session;
-      if (session?.user && active) {
-        const u = await buildUserFromProfile(
-          session.user.id,
-          session.user.email ?? '使用者',
-          session.user.user_metadata?.picture as string | undefined,
-        );
-        if (active) setUser(u);
-      }
-    });
-
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const restore = async (session: { user: { id: string; email?: string; user_metadata?: Record<string, unknown> } } | null) => {
       if (!active) return;
       if (session?.user) {
         const u = await buildUserFromProfile(
           session.user.id,
+          session.user.email ?? null,
           session.user.email ?? '使用者',
           session.user.user_metadata?.picture as string | undefined,
         );
-        setUser(u);
+        if (active) setUser(u);
       } else {
         setUser(null);
       }
-    });
+    };
 
+    supabase.auth.getSession().then(({ data }) => restore(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => restore(session));
     return () => { active = false; sub.subscription.unsubscribe(); };
   }, []);
 
   // ===========================================================================
-  //  localStorage fallback 輔助（未設定 Supabase 時，行為與舊版完全一致）
+  //  localStorage fallback 輔助（未設定 Supabase 時）
   // ===========================================================================
   const getStoredUsers = (): StoredUser[] => {
     const saved = localStorage.getItem('allUsers');
@@ -116,32 +116,25 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   };
 
   // ===========================================================================
-  //  login
+  //  login（角色由帳號決定，不再由前端選擇）
   // ===========================================================================
-  const login = async (username: string, password: string, role: UserRole) => {
+  const login = async (username: string, password: string): Promise<AuthResult> => {
     if (isSupabaseConfigured) {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: toEmail(username),
-        password,
+        email: toEmail(username), password,
       });
-      if (error || !data.user) {
-        return { success: false, message: error?.message ?? '帳號或密碼錯誤' };
-      }
-      const u = await buildUserFromProfile(data.user.id, username);
+      if (error || !data.user) return { success: false, message: error?.message ?? '帳號或密碼錯誤' };
+      const u = await buildUserFromProfile(data.user.id, data.user.email ?? null, username);
       setUser(u);
       return { success: true, message: '登入成功' };
     }
 
-    // -- fallback：localStorage --
-    const allUsers = getStoredUsers();
-    const foundUser = allUsers.find(
-      (u) => u.username === username && u.password === password && u.role === role
-    );
+    // -- fallback：localStorage（username + password 比對；角色取自帳號）--
+    const foundUser = getStoredUsers().find(u => u.username === username && u.password === password);
     if (!foundUser) return { success: false, message: '帳號或密碼錯誤' };
+    const role = applyDeveloperOverride(foundUser.role, undefined, foundUser.username);
     const newUser = decorateUser({
-      id: foundUser.id,
-      name: foundUser.realName,
-      role: foundUser.role,
+      id: foundUser.id, name: foundUser.realName, role,
       avatar: `https://picsum.photos/seed/${foundUser.realName}/150/150`,
     });
     setUser(newUser);
@@ -150,151 +143,91 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   };
 
   // ===========================================================================
-  //  register
+  //  register（只能註冊 medical / family；admin/developer 不開放自選）
   // ===========================================================================
-  const register = async (data: RegisterData) => {
-    if (data.password.length < 6) {
-      return { success: false, message: '密碼至少需要 6 個字符' };
+  const register = async (data: RegisterData): Promise<AuthResult> => {
+    if (data.password.length < 6) return { success: false, message: '密碼至少需要 6 個字符' };
+    if (data.role !== 'medical' && data.role !== 'family') {
+      return { success: false, message: '註冊角色僅限醫護人員或家屬' };
     }
-    if (data.role === 'medical' && !data.unitCode) {
-      return { success: false, message: '醫護人員必須填寫單位代號' };
-    }
-    if (data.role === 'family' && !data.familyCode) {
-      return { success: false, message: '家屬必須填寫家屬代碼' };
-    }
+    if (data.role === 'medical' && !data.unitCode) return { success: false, message: '醫護人員必須填寫單位代號' };
+    if (data.role === 'family' && !data.familyCode) return { success: false, message: '家屬必須填寫家屬代碼' };
 
     if (isSupabaseConfigured) {
       const { error } = await supabase.auth.signUp({
         email: toEmail(data.username),
         password: data.password,
-        options: {
-          data: {
-            real_name: data.realName,
-            role: data.role,
-            unit_code: data.unitCode,
-            family_code: data.familyCode,
-          },
-        },
+        options: { data: {
+          real_name: data.realName, role: data.role,
+          unit_code: data.unitCode, family_code: data.familyCode,
+        } },
       });
       if (error) return { success: false, message: error.message };
-      // profiles 由資料庫 trigger 自動建立
       return { success: true, message: '註冊成功，請使用帳號登入' };
     }
 
     // -- fallback：localStorage --
     const allUsers = getStoredUsers();
-    if (allUsers.some((u) => u.username === data.username)) {
-      return { success: false, message: '帳號已被註冊' };
-    }
+    if (allUsers.some(u => u.username === data.username)) return { success: false, message: '帳號已被註冊' };
     allUsers.push({ ...data, id: Math.random().toString(36).substr(2, 9) });
     saveStoredUsers(allUsers);
     return { success: true, message: '註冊成功，請使用帳號登入' };
   };
 
   // ===========================================================================
-  //  Google 登入
+  //  Google 登入（新使用者預設「家屬」最低權限；開發者信箱 → developer）
   // ===========================================================================
   const parseGoogleJwt = (token: string) => {
     try {
-      const base64Url = token.split('.')[1];
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
       const padded = base64.padEnd(base64.length + ((4 - base64.length % 4) % 4), '=');
-      const bytes = Uint8Array.from(atob(padded), (char) => char.charCodeAt(0));
-      const json = new TextDecoder('utf-8').decode(bytes);
+      const json = new TextDecoder('utf-8').decode(Uint8Array.from(atob(padded), c => c.charCodeAt(0)));
       return JSON.parse(json) as { sub: string; name: string; email: string; picture: string };
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   };
 
-  const loginWithGoogle = async (credential: string): Promise<GoogleLoginResult> => {
+  const loginWithGoogle = async (credential: string): Promise<AuthResult> => {
     if (isSupabaseConfigured) {
-      // 真正驗證 Google ID Token（由 Supabase 後端驗章）
-      const { data, error } = await supabase.auth.signInWithIdToken({
-        provider: 'google',
-        token: credential,
-      });
-      if (error || !data.user) {
-        return { success: false, message: error?.message ?? 'Google 登入失敗' };
-      }
+      const { data, error } = await supabase.auth.signInWithIdToken({ provider: 'google', token: credential });
+      if (error || !data.user) return { success: false, message: error?.message ?? 'Google 登入失敗' };
       const u = await buildUserFromProfile(
-        data.user.id,
-        data.user.user_metadata?.name ?? data.user.email ?? 'Google 使用者',
+        data.user.id, data.user.email ?? null,
+        (data.user.user_metadata?.name as string) ?? data.user.email ?? 'Google 使用者',
         data.user.user_metadata?.picture as string | undefined,
       );
       setUser(u);
       return { success: true, message: 'Google 登入成功' };
     }
 
-    // -- fallback：解碼 JWT + localStorage（保留原新用戶選角色流程）--
+    // -- fallback：解碼 JWT + localStorage（預設家屬；開發者信箱 → developer）--
     const payload = parseGoogleJwt(credential);
     if (!payload) return { success: false, message: 'Google 驗證失敗，請再試一次' };
     const allUsers = getStoredUsers();
     const googleUsername = `google_${payload.sub}`;
-    const foundUser = allUsers.find((u) => u.username === googleUsername);
-    if (!foundUser) {
-      return { success: false, needsRole: true, credential, googleName: payload.name, googlePicture: payload.picture };
-    }
-    applyGoogleUserLocal(payload, foundUser.role);
-    return { success: true, message: 'Google 登入成功' };
-  };
-
-  const applyGoogleUserLocal = (payload: { sub: string; name: string; picture: string }, role: UserRole) => {
-    const allUsers = getStoredUsers();
-    const googleUsername = `google_${payload.sub}`;
-    let foundUser = allUsers.find((u) => u.username === googleUsername);
-    if (!foundUser) {
-      foundUser = {
-        id: payload.sub, realName: payload.name, username: googleUsername, password: '', role,
-        unitCode: role === 'medical' ? 'GOOGLE' : undefined,
-        familyCode: role === 'family' ? 'GOOGLE' : undefined,
-      };
-      allUsers.push(foundUser);
+    let found = allUsers.find(u => u.username === googleUsername);
+    if (!found) {
+      found = { id: payload.sub, realName: payload.name, username: googleUsername, password: '', role: 'family' };
+      allUsers.push(found);
       saveStoredUsers(allUsers);
-    } else if (foundUser.realName !== payload.name) {
-      foundUser.realName = payload.name;
+    } else if (found.realName !== payload.name) {
+      found.realName = payload.name;
       saveStoredUsers(allUsers);
     }
+    const role = applyDeveloperOverride(found.role, payload.email);
     const newUser = decorateUser({
-      id: foundUser.id,
-      name: foundUser.realName,
-      role: foundUser.role,
-      avatar: payload.picture || `https://picsum.photos/seed/${foundUser.realName}/150/150`,
+      id: found.id, name: found.realName, role,
+      avatar: payload.picture || `https://picsum.photos/seed/${found.realName}/150/150`,
     });
     setUser(newUser);
     localStorage.setItem('currentUser', JSON.stringify(newUser));
-  };
-
-  const completeGoogleLogin = async (credential: string, role: UserRole) => {
-    // 僅 fallback 模式會走到此（Supabase 模式直接登入，角色預設 medical 可後續切換）
-    const payload = parseGoogleJwt(credential);
-    if (!payload) return { success: false, message: 'Google 驗證失敗，請再試一次' };
-    applyGoogleUserLocal(payload, role);
     return { success: true, message: 'Google 登入成功' };
   };
 
   // ===========================================================================
-  //  switchRole / logout
+  //  logout
   // ===========================================================================
-  const switchRole = async (newRole: UserRole) => {
-    if (!user) return;
-    if (isSupabaseConfigured) {
-      await supabase.from('profiles').update({ role: newRole }).eq('id', user.id);
-    }
-    const updatedUser = decorateUser({ id: user.id, name: user.name, role: newRole, avatar: user.avatar });
-    setUser(updatedUser);
-    if (!isSupabaseConfigured) {
-      localStorage.setItem('currentUser', JSON.stringify(updatedUser));
-      const allUsers = getStoredUsers();
-      const idx = allUsers.findIndex((u) => u.id === user.id);
-      if (idx !== -1) { allUsers[idx].role = newRole; saveStoredUsers(allUsers); }
-    }
-  };
-
   const logout = async () => {
-    if (isSupabaseConfigured) {
-      await supabase.auth.signOut();
-    }
+    if (isSupabaseConfigured) await supabase.auth.signOut();
     setUser(null);
     localStorage.removeItem('currentUser');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -302,7 +235,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <UserContext.Provider value={{ user, login, register, loginWithGoogle, completeGoogleLogin, switchRole, logout }}>
+    <UserContext.Provider value={{ user, login, register, loginWithGoogle, logout }}>
       {children}
     </UserContext.Provider>
   );
@@ -310,8 +243,6 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
 
 export function useUser() {
   const context = useContext(UserContext);
-  if (context === undefined) {
-    throw new Error('useUser must be used within a UserProvider');
-  }
+  if (context === undefined) throw new Error('useUser must be used within a UserProvider');
   return context;
 }

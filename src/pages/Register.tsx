@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Page } from '../types';
-import { Activity, ArrowLeft, Building2, HeartPulse, ShieldCheck, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
+import { Activity, ArrowLeft, Building2, HeartPulse, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { GoogleLoginButton } from '../components/GoogleLoginButton';
 
@@ -128,11 +128,10 @@ export function Register() {
         <form className="space-y-5" onSubmit={handleSubmit}>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">使用者身份</label>
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-2 gap-3">
               {[
                 { id: 'medical', label: '醫護', icon: HeartPulse },
                 { id: 'family', label: '家屬', icon: Building2 },
-                { id: 'admin', label: '管理者', icon: ShieldCheck },
               ].map((r) => (
                 <button
                   key={r.id}

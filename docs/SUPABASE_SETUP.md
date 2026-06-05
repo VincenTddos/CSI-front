@@ -61,6 +61,23 @@ select '裝置-' || r.name, r.id, 'offline' from public.rooms r;
 select id, name from public.devices;
 ```
 
+## 6.5 套用角色權限升級（migration 0002）— 開發者最高權限
+1. **SQL Editor** → 開啟 [`supabase/migrations/0002_roles_and_developer.sql`](../supabase/migrations/0002_roles_and_developer.sql)
+2. **先單獨執行【第一段】** `alter type user_role add value ...`，按 Run
+   （PostgreSQL 規定新 enum 值需先 commit）
+3. **再執行【第二段】** 其餘所有 SQL（輔助函式、RLS、trigger、一次性提升）
+
+此 migration 會：
+- 新增 **`developer`（開發者）** 最高角色
+- 讓開發者享 admin 級 RLS 權限（`is_admin()` / `is_staff()`）
+- 註冊時自動指派角色：**開發者信箱 → developer**；其餘（含 Google 註冊）**預設 family 最低權限**
+- **防自我提權**：一般使用者不可從前端改自己的 `role`
+- 把白名單既有帳號一次性提升為 developer
+
+> **開發者白名單**：同時存在於兩處，要保持一致——
+> 前端 `src/lib/roles.ts` 的 `DEVELOPER_EMAILS`、
+> 資料庫 `0002` 的 `public.developer_emails()` 函式。預設為 `vincent6244@gmail.com`。
+
 ## 7. 驗證
 - 註冊一個帳號 → 在 **Authentication → Users** 看到新使用者、**profiles** 表出現對應資料列
 - 登入後新增住民/健康記錄 → 對應表出現資料

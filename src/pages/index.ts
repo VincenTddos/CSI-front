@@ -13,4 +13,5 @@ export { DeviceManagement } from './DeviceManagement';
 export { SubcarrierAnalyzer } from './SubcarrierAnalyzer';
 export { RoomOccupancy } from './RoomOccupancy';
 export { Analytics } from './Analytics';
+export { Landing } from './Landing';
 

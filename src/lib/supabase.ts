@@ -14,7 +14,12 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 /** 是否已設定 Supabase（未設定時前端會 fallback 回 localStorage，方便本機開發） */
-export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey);
+export const isSupabaseConfigured = Boolean(
+  supabaseUrl &&
+  supabaseAnonKey &&
+  !supabaseUrl.includes('YOUR_PROJECT') &&
+  !supabaseAnonKey.includes('YOUR_SUPABASE')
+);
 
 if (!isSupabaseConfigured) {
   // 不丟錯誤，僅警告——讓未設定金鑰的開發者仍能啟動前端

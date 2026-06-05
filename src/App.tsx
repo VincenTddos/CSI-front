@@ -16,7 +16,8 @@ import {
   FamilyHealthLog,
   SubcarrierAnalyzer,
   RoomOccupancy,
-  Analytics
+  Analytics,
+  Landing
 } from './pages';
 import { DeveloperProvider, useDeveloper } from './contexts/DeveloperContext';
 import { UserProvider, useUser } from './contexts/UserContext';
@@ -46,13 +47,14 @@ function AppRoutes() {
 
   return (
     <Routes>
+      {/* 公開頁面 */}
+      <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
-      
-      {/* If user is authenticated, show protected pages */}
+
+      {/* 已登入才顯示的受保護頁面（無 path 的 Layout 包裹，子路由解析為 /realtime…） */}
       {user ? (
-        <Route path="/" element={<Layout><DevBackdoor /></Layout>}>
-          <Route index element={<Navigate to="/realtime" replace />} />
+        <Route element={<Layout><DevBackdoor /></Layout>}>
           <Route path="device" element={<DeviceManagement />} />
           <Route path="personnel" element={<PersonnelManagement />} />
           <Route path="realtime" element={<RealtimeMonitoring />} />
@@ -68,9 +70,9 @@ function AppRoutes() {
           <Route path="occupancy" element={<RoomOccupancy />} />
         </Route>
       ) : null}
-      
-      {/* Default redirect */}
-      <Route path="*" element={<Navigate to="/login" replace />} />
+
+      {/* 其餘未知路徑 → 介紹頁 */}
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }

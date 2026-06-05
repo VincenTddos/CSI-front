@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React from 'react';
 import {
   MonitorSmartphone,
   KeyRound,
@@ -15,43 +15,31 @@ import {
   BarChart3,
   Radio,
   LayoutGrid,
-  ChevronDown,
   ShieldCheck,
   Building2,
+  Crown,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { Page } from '../types';
 import { useUser } from '../contexts/UserContext';
 import { UserRole } from '../types';
+import { canSeeAll } from '../lib/roles';
 
 import { useLocation, useNavigate } from 'react-router-dom';
 
 const ROLES: { id: UserRole; label: string; icon: React.ElementType; color: string; badge: string }[] = [
-  { id: 'medical',  label: '醫護人員', icon: HeartPulse,  color: 'text-blue-400',   badge: 'bg-blue-500/20 text-blue-400' },
-  { id: 'family',   label: '家屬',     icon: Building2,   color: 'text-green-400',  badge: 'bg-green-500/20 text-green-400' },
-  { id: 'admin',    label: '管理者',   icon: ShieldCheck, color: 'text-red-400',    badge: 'bg-red-500/20 text-red-400' },
+  { id: 'developer', label: '開發者',   icon: Crown,       color: 'text-purple-400', badge: 'bg-purple-500/20 text-purple-300' },
+  { id: 'medical',   label: '醫護人員', icon: HeartPulse,  color: 'text-blue-400',   badge: 'bg-blue-500/20 text-blue-400' },
+  { id: 'family',    label: '家屬',     icon: Building2,   color: 'text-green-400',  badge: 'bg-green-500/20 text-green-400' },
+  { id: 'admin',     label: '管理者',   icon: ShieldCheck, color: 'text-red-400',    badge: 'bg-red-500/20 text-red-400' },
 ];
 
 export function Sidebar() {
-  const { user, logout, switchRole } = useUser();
+  const { user, logout } = useUser();
   const location = useLocation();
   const navigate = useNavigate();
-  const [showRolePicker, setShowRolePicker] = useState(false);
-  const pickerRef = useRef<HTMLDivElement>(null);
 
   // Parse current route to match item type
   const currentPage = location.pathname.substring(1) || 'realtime';
-
-  // Close picker when clicking outside
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
-        setShowRolePicker(false);
-      }
-    };
-    if (showRolePicker) document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [showRolePicker]);
 
   const menuItems = [
     { id: 'realtime', label: '監控面板', icon: Activity, roles: ['admin', 'medical', 'family'] },
@@ -70,7 +58,8 @@ export function Sidebar() {
   ] as const;
 
   const filteredItems = menuItems.filter(item =>
-    !item.roles || (user && (item.roles as readonly string[]).includes(user.role))
+    !item.roles ||
+    (user && (canSeeAll(user.role) || (item.roles as readonly string[]).includes(user.role)))
   );
 
   const currentRole = ROLES.find(r => r.id === user?.role);
@@ -88,65 +77,25 @@ export function Sidebar() {
         </div>
         <h2 className="text-white font-medium text-lg tracking-wide">{user?.name}，您好</h2>
 
-        {/* 角色標籤 + 切換按鈕 */}
-        <div className="relative mt-1" ref={pickerRef}>
-          <button
-            onClick={() => setShowRolePicker(v => !v)}
+        {/* 角色標籤（純顯示，不可切換） */}
+        <div className="mt-1">
+          <span
             className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all",
+              "flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider",
               currentRole?.badge ?? 'bg-slate-500/20 text-slate-400',
-              "hover:brightness-125 cursor-pointer"
             )}
-            title="點擊切換角色"
           >
+            {currentRole?.icon && <currentRole.icon className="w-3 h-3" />}
             {currentRole?.label ?? user?.role}
-            <ChevronDown className={cn("w-3 h-3 transition-transform", showRolePicker && "rotate-180")} />
-          </button>
-
-          {/* 角色選單下拉 */}
-          {showRolePicker && (
-            <div className="absolute top-full mt-1.5 left-1/2 -translate-x-1/2 w-36 bg-[#1E252B] border border-slate-700 rounded-xl shadow-2xl overflow-hidden z-50 animate-in fade-in zoom-in-95 duration-150">
-              <p className="text-[10px] text-slate-500 text-center pt-2 pb-1 font-medium tracking-wider uppercase">切換身份</p>
-              {ROLES.map(r => (
-                <button
-                  key={r.id}
-                  onClick={() => {
-                    switchRole(r.id);
-                    setShowRolePicker(false);
-                    navigate('/realtime');
-                  }}
-                  className={cn(
-                    "w-full flex items-center gap-2.5 px-3 py-2.5 text-sm transition-colors",
-                    user?.role === r.id
-                      ? cn("font-semibold", r.color, "bg-white/5")
-                      : "text-slate-400 hover:text-white hover:bg-[#2C363F]"
-                  )}
-                >
-                  <r.icon className={cn("w-4 h-4 flex-shrink-0", r.color)} />
-                  {r.label}
-                  {user?.role === r.id && (
-                    <span className="ml-auto text-[10px] opacity-70">✓</span>
-                  )}
-                </button>
-              ))}
-              <div className="border-t border-slate-700/50 mt-1 mb-1" />
-              <button
-                onClick={() => { logout(); setShowRolePicker(false); }}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-slate-500 hover:text-red-400 hover:bg-[#2C363F] transition-colors"
-              >
-                <LogOut className="w-4 h-4 flex-shrink-0" />
-                登出
-              </button>
-            </div>
-          )}
+          </span>
         </div>
 
-        {/* 原有的登出按鈕（小一點，保留備用） */}
+        {/* 登出按鈕 */}
         <button
           onClick={logout}
-          className="mt-2 text-xs text-slate-600 hover:text-slate-400 transition-colors flex items-center gap-1"
+          className="mt-3 text-xs text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1.5"
         >
-          <LogOut className="w-3 h-3" /> 登出帳號
+          <LogOut className="w-3.5 h-3.5" /> 登出帳號
         </button>
       </div>
 

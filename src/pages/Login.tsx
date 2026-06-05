@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { Page, UserRole } from '../types';
 import { Activity, Lock, User, AlertCircle } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { GoogleLoginButton } from '../components/GoogleLoginButton';
@@ -7,7 +6,6 @@ import { GoogleLoginButton } from '../components/GoogleLoginButton';
 import { useNavigate } from 'react-router-dom';
 
 export function Login() {
-  const [role, setRole] = useState<UserRole>('medical');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -34,7 +32,7 @@ export function Login() {
 
     // Simulate network delay
     setTimeout(async () => {
-      const result = await login(username, password, role);
+      const result = await login(username, password);
       if (result.success) {
         setUsername('');
         setPassword('');
@@ -65,20 +63,6 @@ export function Login() {
         )}
 
         <form className="space-y-5" onSubmit={handleSubmit}>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">使用者身份</label>
-            <select 
-              value={role}
-              onChange={(e) => setRole(e.target.value as UserRole)}
-              disabled={loading}
-              className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-[#007AFF]/20 focus:border-[#007AFF] transition-all outline-none text-slate-700 disabled:opacity-60"
-            >
-              <option value="medical">醫護人員 (Medical Staff)</option>
-              <option value="family">家屬 (Family Member)</option>
-              <option value="admin">管理者 (Administrator)</option>
-            </select>
-          </div>
-
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">帳號</label>
             <div className="relative">

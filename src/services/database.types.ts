@@ -3,7 +3,7 @@
 //  （前端與 service 層共用，確保型別安全）
 // =============================================================================
 
-export type UserRole = 'medical' | 'family' | 'admin';
+export type UserRole = 'developer' | 'medical' | 'family' | 'admin';
 export type GenderType = '男' | '女';
 export type DeviceStatus = 'online' | 'offline' | 'error';
 export type AlertStatus = 'pending' | 'confirmed' | 'false_alarm';
