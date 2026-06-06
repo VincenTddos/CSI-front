@@ -106,6 +106,8 @@ export default defineConfig(({mode}) => {
       hmr: process.env.DISABLE_HMR !== 'true',
       middlewareMode: false,
       headers: {
+        // 允許 Google 登入彈窗 postMessage 回傳（否則 COOP 會擋）
+        'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
         // 允許 Google Identity Services (GIS) 所需的 eval 與 iframe
         'Content-Security-Policy': [
           "default-src 'self'",

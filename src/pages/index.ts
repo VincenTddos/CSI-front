@@ -15,4 +15,5 @@ export { RoomOccupancy } from './RoomOccupancy';
 export { Analytics } from './Analytics';
 export { Landing } from './Landing';
 export { CareInsights } from './CareInsights';
+export { AccountManagement } from './AccountManagement';
 

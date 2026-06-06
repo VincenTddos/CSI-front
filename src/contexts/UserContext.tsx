@@ -18,12 +18,23 @@ interface StoredUser extends RegisterData {
 
 interface AuthResult { success: boolean; message: string }
 
+export interface AccountInfo {
+  id: string;
+  username: string;
+  realName: string;
+  role: UserRole;
+}
+
 interface UserContextType {
   user: User | null;
   login: (username: string, password: string) => Promise<AuthResult>;
   register: (data: RegisterData) => Promise<AuthResult>;
   loginWithGoogle: (credential: string) => Promise<AuthResult>;
   logout: () => Promise<void>;
+  // 開發者/管理者專用：帳號管理
+  listAccounts: () => Promise<AccountInfo[]>;
+  createAccount: (data: RegisterData) => Promise<AuthResult>;
+  setAccountRole: (id: string, role: UserRole) => Promise<AuthResult>;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
@@ -61,21 +72,36 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   const buildUserFromProfile = async (
     userId: string, email: string | null, fallbackName: string, avatar?: string,
   ): Promise<User | null> => {
-    const { data, error } = await supabase
+    // 用 maybeSingle 避免「0 筆」直接丟錯
+    const { data } = await supabase
       .from('profiles')
       .select('real_name, role, avatar_url')
       .eq('id', userId)
-      .single();
-    if (error || !data) return null;
+      .maybeSingle();
 
-    // 開發者最高權限：UI 立即套用；DB 角色由 0002 的 signup trigger + 一次性 UPDATE 持久化
-    // （RLS 防自我提權，故此處不從前端改 DB role）
-    const role = applyDeveloperOverride((data.role as UserRole) ?? 'family', email);
+    let realName = data?.real_name as string | undefined;
+    let baseRole = (data?.role as UserRole) ?? 'family';
+    const avatarUrl = (data?.avatar_url as string | null) ?? null;
+
+    // 防呆：profiles 沒有這列（trigger 沒建到）→ 自動補建一筆，避免登入後被踢回首頁
+    if (!data) {
+      const role = applyDeveloperOverride('family', email);
+      const { error: insErr } = await supabase
+        .from('profiles')
+        .insert({ id: userId, real_name: fallbackName, role });
+      if (insErr) {
+        console.warn('[Auth] 自動建立 profile 失敗', insErr.message);
+      }
+      realName = fallbackName;
+      baseRole = role;
+    }
+
+    const role = applyDeveloperOverride(baseRole, email);
     return decorateUser({
       id: userId,
-      name: data.real_name || fallbackName,
+      name: realName || fallbackName,
       role,
-      avatar: avatar || data.avatar_url || `https://picsum.photos/seed/${data.real_name}/150/150`,
+      avatar: avatar || avatarUrl || `https://picsum.photos/seed/${realName || fallbackName}/150/150`,
     });
   };
 
@@ -125,6 +151,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       });
       if (error || !data.user) return { success: false, message: error?.message ?? '帳號或密碼錯誤' };
       const u = await buildUserFromProfile(data.user.id, data.user.email ?? null, username);
+      if (!u) return { success: false, message: '無法載入個人資料，請稍後再試' };
       setUser(u);
       return { success: true, message: '登入成功' };
     }
@@ -195,6 +222,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
         (data.user.user_metadata?.name as string) ?? data.user.email ?? 'Google 使用者',
         data.user.user_metadata?.picture as string | undefined,
       );
+      if (!u) return { success: false, message: '無法載入個人資料，請稍後再試' };
       setUser(u);
       return { success: true, message: 'Google 登入成功' };
     }
@@ -226,6 +254,67 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   // ===========================================================================
   //  logout
   // ===========================================================================
+  // ===========================================================================
+  //  帳號管理（開發者/管理者專用）
+  // ===========================================================================
+  const isManager = () => user?.role === 'developer' || user?.role === 'admin';
+
+  const listAccounts = async (): Promise<AccountInfo[]> => {
+    if (isSupabaseConfigured) {
+      const { data, error } = await supabase.from('profiles').select('id, real_name, role');
+      if (error) { console.warn('[Accounts]', error.message); return []; }
+      return (data ?? []).map(p => ({
+        id: p.id, username: p.real_name, realName: p.real_name, role: p.role as UserRole,
+      }));
+    }
+    return getStoredUsers().map(u => ({
+      id: u.id, username: u.username, realName: u.realName, role: u.role,
+    }));
+  };
+
+  const createAccount = async (data: RegisterData): Promise<AuthResult> => {
+    if (!isManager()) return { success: false, message: '權限不足' };
+    if (!data.username.trim()) return { success: false, message: '請輸入帳號' };
+    if (data.password.length < 6) return { success: false, message: '密碼至少需要 6 個字符' };
+
+    if (isSupabaseConfigured) {
+      // 雲端模式：建立帳號需後端 admin API，前端 signUp 會切換登入狀態，
+      // 故此處僅支援「角色指派」。請改用註冊頁建立帳號，再到此調整角色。
+      return { success: false, message: '雲端模式請用註冊頁建立帳號，再於此調整角色' };
+    }
+
+    const allUsers = getStoredUsers();
+    if (allUsers.some(u => u.username === data.username)) {
+      return { success: false, message: '帳號已被註冊' };
+    }
+    allUsers.push({ ...data, id: Math.random().toString(36).substr(2, 9) });
+    saveStoredUsers(allUsers);
+    return { success: true, message: `已建立帳號「${data.username}」(${data.role})` };
+  };
+
+  const setAccountRole = async (id: string, role: UserRole): Promise<AuthResult> => {
+    if (!isManager()) return { success: false, message: '權限不足' };
+
+    if (isSupabaseConfigured) {
+      const { error } = await supabase.from('profiles').update({ role }).eq('id', id);
+      if (error) return { success: false, message: error.message };
+    } else {
+      const allUsers = getStoredUsers();
+      const idx = allUsers.findIndex(u => u.id === id);
+      if (idx === -1) return { success: false, message: '找不到帳號' };
+      allUsers[idx].role = role;
+      saveStoredUsers(allUsers);
+    }
+
+    // 若改到的是目前登入者本人，同步更新畫面
+    if (user && user.id === id) {
+      const updated = decorateUser({ id: user.id, name: user.name, role, avatar: user.avatar });
+      setUser(updated);
+      if (!isSupabaseConfigured) localStorage.setItem('currentUser', JSON.stringify(updated));
+    }
+    return { success: true, message: '角色已更新' };
+  };
+
   const logout = async () => {
     // 即使 signOut 失敗/逾時，也一定清除本地登入狀態
     try {
@@ -242,7 +331,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <UserContext.Provider value={{ user, login, register, loginWithGoogle, logout }}>
+    <UserContext.Provider value={{ user, login, register, loginWithGoogle, logout, listAccounts, createAccount, setAccountRole }}>
       {children}
     </UserContext.Provider>
   );

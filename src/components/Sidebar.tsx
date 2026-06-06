@@ -52,6 +52,7 @@ export function Sidebar() {
     { id: 'daily-health', label: '每日健康', icon: HeartPulse, roles: ['admin', 'medical'] },
     { id: 'routine-checkup', label: '日常檢查', icon: ClipboardList, roles: ['admin', 'medical'] },
     { id: 'personnel', label: '人員管理', icon: Users, roles: ['admin'] },
+    { id: 'accounts', label: '帳號管理', icon: KeyRound, roles: ['admin'] },
     { id: 'health', label: '健康報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
     { id: 'analytics', label: '管理報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
     { id: 'insights', label: '智慧分析', icon: Sparkles, roles: ['admin', 'medical', 'family'] },
