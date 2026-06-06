@@ -227,7 +227,14 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   //  logout
   // ===========================================================================
   const logout = async () => {
-    if (isSupabaseConfigured) await supabase.auth.signOut();
+    // 即使 signOut 失敗/逾時，也一定清除本地登入狀態
+    try {
+      if (isSupabaseConfigured) {
+        await supabase.auth.signOut({ scope: 'local' });
+      }
+    } catch (e) {
+      console.warn('[Auth] signOut 發生錯誤，仍強制登出', e);
+    }
     setUser(null);
     localStorage.removeItem('currentUser');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

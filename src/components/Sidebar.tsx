@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   Building2,
   Crown,
+  Sparkles,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useUser } from '../contexts/UserContext';
@@ -53,6 +54,7 @@ export function Sidebar() {
     { id: 'personnel', label: '人員管理', icon: Users, roles: ['admin'] },
     { id: 'health', label: '健康報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
     { id: 'analytics', label: '管理報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
+    { id: 'insights', label: '智慧分析', icon: Sparkles, roles: ['admin', 'medical', 'family'] },
     { id: 'alerts', label: '警報通知', icon: BellRing, roles: ['admin', 'medical', 'family'] },
     { id: 'settings', label: '系統設定', icon: Settings, roles: ['admin', 'medical'] },
   ] as const;

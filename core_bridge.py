@@ -338,6 +338,10 @@ class SharedState:
     # ---- LINE Notify 邊緣偵測 ---- #
     LINE_NOTIFY_COOLDOWN_SEC: float = 60.0  # 同一事件最短 60 秒才再通知一次
 
+    def get_line_token(self) -> str:
+        with self._lock:
+            return self._line_token
+
     def check_and_arm_line_notify(self) -> Optional[str]:
         """
         每個廣播週期呼叫一次。
@@ -469,10 +473,10 @@ SUPABASE_ENABLED = bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
 
 def _supabase_request(method: str, path: str, body: Optional[dict] = None,
-                      prefer: Optional[str] = None) -> None:
-    """對 Supabase REST (PostgREST) 發出請求；失敗僅記錄不拋出。"""
+                      prefer: Optional[str] = None):
+    """對 Supabase REST (PostgREST) 發出請求；回傳解析後的 JSON（或 None）。失敗僅記錄。"""
     if not SUPABASE_ENABLED:
-        return
+        return None
     import urllib.request
     try:
         url = f"{SUPABASE_URL}/rest/v1/{path}"
@@ -487,13 +491,21 @@ def _supabase_request(method: str, path: str, body: Optional[dict] = None,
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         with urllib.request.urlopen(req, timeout=10) as resp:
             logger.debug("[Supabase] %s %s → %s", method, path, resp.status)
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else None
     except Exception as exc:
         logger.warning("[Supabase] %s %s 失敗: %s", method, path, exc)
+        return None
+
+
+# ---- 通知升級（跌倒未確認 → X 分鐘後再次推播）----
+ESCALATE_AFTER_SEC = 120.0
+_pending_falls: list = []   # [{id, at(monotonic), done}]
 
 
 def supabase_insert_fall_event(score: float, loc_x, loc_y) -> None:
-    """跌倒事件寫入 fall_events 表。"""
-    _supabase_request("POST", "fall_events", {
+    """跌倒事件寫入 fall_events 表，並登記等待確認（供升級通知）。"""
+    rows = _supabase_request("POST", "fall_events", {
         "device_id": WICARE_DEVICE_ID or None,
         "movement_score": round(score, 2),
         "location_x": round(loc_x, 2) if loc_x is not None else None,
@@ -502,7 +514,31 @@ def supabase_insert_fall_event(score: float, loc_x, loc_y) -> None:
         "confidence": min(99.0, round(score, 2)),
         "status": "pending",
         "detected_at": datetime.now(timezone.utc).isoformat(),
-    }, prefer="return=minimal")
+    }, prefer="return=representation")
+    try:
+        if rows and isinstance(rows, list) and rows[0].get("id"):
+            _pending_falls.append({"id": rows[0]["id"], "at": time.monotonic(), "done": False})
+    except Exception:
+        pass
+
+
+def process_escalations(line_token: str) -> None:
+    """檢查逾時未確認的跌倒事件，仍為 pending 則發送升級通知（在背景執行緒呼叫）。"""
+    now = time.monotonic()
+    for p in _pending_falls:
+        if p["done"] or (now - p["at"]) < ESCALATE_AFTER_SEC:
+            continue
+        p["done"] = True
+        rows = _supabase_request("GET", f"fall_events?id=eq.{p['id']}&select=status")
+        status = rows[0]["status"] if rows and isinstance(rows, list) else None
+        if status == "pending" and line_token:
+            send_line_notify(
+                line_token,
+                "\n🚨【升級通知】\n跌倒警報已超過 2 分鐘無人確認，\n請立即派員前往查看！",
+            )
+            logger.info("[LINE] 已發送跌倒升級通知 (event=%s)", p["id"])
+    # 清掉已處理的，避免清單無限長
+    _pending_falls[:] = [p for p in _pending_falls if not p["done"]]
 
 
 def supabase_upsert_activity(bucket_iso: str, level: str, avg_score: float,
@@ -1194,6 +1230,9 @@ async def broadcast_loop() -> None:
             if time.time() - last_heartbeat >= 30.0:
                 loop.run_in_executor(None, supabase_device_heartbeat, "online")
                 last_heartbeat = time.time()
+                # 順帶檢查跌倒升級通知（未確認逾時 → 再推播）
+                if _pending_falls:
+                    loop.run_in_executor(None, process_escalations, state.get_line_token())
 
         if connected_clients:
             # 組裝兩種封包

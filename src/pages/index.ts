@@ -14,4 +14,5 @@ export { SubcarrierAnalyzer } from './SubcarrierAnalyzer';
 export { RoomOccupancy } from './RoomOccupancy';
 export { Analytics } from './Analytics';
 export { Landing } from './Landing';
+export { CareInsights } from './CareInsights';
 

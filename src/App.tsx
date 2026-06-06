@@ -17,7 +17,8 @@ import {
   SubcarrierAnalyzer,
   RoomOccupancy,
   Analytics,
-  Landing
+  Landing,
+  CareInsights
 } from './pages';
 import { DeveloperProvider, useDeveloper } from './contexts/DeveloperContext';
 import { UserProvider, useUser } from './contexts/UserContext';
@@ -61,6 +62,7 @@ function AppRoutes() {
           <Route path="alerts" element={<AlertNotifications />} />
           <Route path="health" element={<HealthReports />} />
           <Route path="analytics" element={<Analytics />} />
+          <Route path="insights" element={<CareInsights />} />
           <Route path="settings" element={<SystemSettings />} />
           <Route path="patients" element={<CareRecipients />} />
           <Route path="daily-health" element={<DailyHealth />} />

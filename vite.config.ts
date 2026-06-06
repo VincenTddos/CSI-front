@@ -113,7 +113,7 @@ export default defineConfig(({mode}) => {
           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
           "font-src 'self' https://fonts.gstatic.com",
           "frame-src https://accounts.google.com",
-          "connect-src 'self' https://accounts.google.com https://*.googleapis.com ws://localhost:*",
+          "connect-src 'self' https://accounts.google.com https://*.googleapis.com https://*.supabase.co wss://*.supabase.co ws://localhost:*",
           "img-src 'self' data: https:",
         ].join('; '),
       },
