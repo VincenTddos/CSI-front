@@ -9,6 +9,9 @@ import { CsiScene } from '../components/landing/CsiScene';
 import { Esp32Photo } from '../components/landing/Esp32Photo';
 import { Reveal } from '../components/landing/Reveal';
 import { CountUp } from '../components/landing/CountUp';
+import { LiveSignal } from '../components/landing/LiveSignal';
+import { ActivityDemo } from '../components/landing/ActivityDemo';
+import { ZoneMap } from '../components/landing/ZoneMap';
 
 export function Landing() {
   const navigate = useNavigate();
@@ -153,6 +156,52 @@ export function Landing() {
               </div>
             </Reveal>
           ))}
+        </div>
+      </section>
+
+      {/* 即時動態演示 */}
+      <section className="relative z-10 max-w-6xl mx-auto px-6 py-24">
+        <Reveal className="text-center mb-14">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-white/70 border border-slate-200 text-xs text-slate-600 mb-4">
+            <Sparkles className="w-3.5 h-3.5 text-[#007AFF]" /> 即時動態演示
+          </div>
+          <h2 className="text-3xl md:text-4xl font-bold text-slate-900">看系統怎麼運作</h2>
+          <p className="text-slate-500 mt-3">以下皆為即時動畫演示，呈現感測、辨識與分區的實際運作</p>
+        </Reveal>
+
+        {/* CSI 訊號波形 + 說明 */}
+        <div className="grid lg:grid-cols-2 gap-8 items-center mb-8">
+          <Reveal><LiveSignal /></Reveal>
+          <Reveal delay={120}>
+            <div>
+              <h3 className="text-2xl font-bold text-slate-900">感測訊號即時視覺化</h3>
+              <p className="text-slate-600 mt-3 leading-relaxed">
+                ESP32 每秒擷取數十組 Wi-Fi 子載波振幅。當有人移動，訊號會明顯抖動——
+                系統把這些變化量化成 0–100 的<span className="font-semibold text-slate-900">移動分數</span>，
+                作為跌倒與活動判斷的依據。
+              </p>
+            </div>
+          </Reveal>
+        </div>
+
+        {/* 活動辨識 + 分區偵測 */}
+        <div className="grid md:grid-cols-2 gap-8">
+          <Reveal>
+            <div className="flex flex-col gap-4">
+              <ActivityDemo />
+              <p className="text-sm text-slate-500 text-center px-4">
+                依移動分數即時分類 6 級活動狀態，分數異常飆高即判定跌倒風險。
+              </p>
+            </div>
+          </Reveal>
+          <Reveal delay={120}>
+            <div className="flex flex-col gap-4">
+              <ZoneMap />
+              <p className="text-sm text-slate-500 text-center px-4">
+                多台 ESP32 各顧一個區域，人在哪個房間、哪台就亮燈——掌握活動範圍。
+              </p>
+            </div>
+          </Reveal>
         </div>
       </section>
 
