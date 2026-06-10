@@ -32,7 +32,7 @@ import { useCSIWebSocket } from '../hooks/useCSIWebSocket';
 import { cn } from '../lib/utils';
 import { RoomGrid, RoomStatus } from '../components/RoomGrid';
 import { RoomDetailPanel } from '../components/RoomDetailPanel';
-import { mockPatients } from '../lib/mockData';
+import { usePatients } from '../hooks/usePatients';
 
 // Simulate CSI waveform data (used when NOT connected to real hardware)
 const generateData = (time: number, isFall: boolean, sensitivity: number = 0.5) => {
@@ -99,7 +99,8 @@ export function RealtimeMonitoring() {
   const { isDeveloperMode, manualState, sensitivity, sceneMode } = useDeveloper();
 
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
-  const { isConnected, bridgeStatus, locationData } = useCSIWebSocket();
+  const { isConnected, dataStale, bridgeStatus, locationData } = useCSIWebSocket();
+  const { patients } = usePatients();
 
   // isConnected = WebSocket 到 bridge 通了；isHardwareOnline = ESP32 板子實際有插著
   const isHardwareOnline = isConnected && bridgeStatus?.status === 'online';
@@ -458,7 +459,7 @@ export function RealtimeMonitoring() {
                   "text-lg font-bold",
                   isHardwareOnline ? "text-slate-800" : "text-red-500"
                 )}>
-                  {isHardwareOnline ? '連線成功' : isConnected ? '板子未插上' : '已斷線'}
+                  {dataStale ? '⚠️ 資料延遲' : isHardwareOnline ? '連線成功' : isConnected ? '板子未插上' : '已斷線'}
                 </h3>
               </div>
             </div>
@@ -908,7 +909,6 @@ export function RealtimeMonitoring() {
                   // Match room to patient by room number extracted from room name
                   const roomNum = selectedRoom.name.match(/\d+/);
                   if (!roomNum) return null;
-                  const patients = mockPatients;
                   return patients.find(p => p.roomNumber === roomNum[0]) || null;
                 })()}
                 onClose={() => setSelectedRoom(null)}

@@ -48,12 +48,20 @@ export interface SystemSettingsState {
   manualThreshold: number | null;
   sensitivity: number;
   lineNotifyEnabled: boolean;
-  lineToken?: string;
+  lineToken?: string;       // LINE Messaging API channel access token（僅上行，不會被廣播回前端）
+  lineUserId?: string;      // 推播接收者 userId（僅上行）
   adaptiveFilterEnabled: boolean;
   hampelFilterEnabled: boolean;
   smoothingEnabled: boolean;
   lastApplied?: string | null;
   bleWriteStatus?: string;
+}
+
+// core_bridge.py 對 settings_update 的回覆封包
+export interface SettingsAckPacket {
+  type: 'settings_ack';
+  settings: SystemSettingsState;
+  timestamp: string; // ISO8601
 }
 
 // Wi-Fi 三角定位座標
@@ -113,4 +121,5 @@ export type Page =
   | 'routine-checkup'
   | 'health-log'
   | 'subcarrier'
-  | 'occupancy';
+  | 'occupancy'
+  | 'overview';

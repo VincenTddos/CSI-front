@@ -29,30 +29,47 @@ class MovingAverageFilter {
 }
 
 // 初始化濾波器
-const energyFilter = new MovingAverageFilter(10); 
+const energyFilter = new MovingAverageFilter(10);
 // 我們也可以針對每個子載波 (Subcarrier) 進行濾波，這裡僅示範能量濾波
 
 // Worker 上下文與 WebSocket
 let socket: WebSocket | null = null;
-let isConnected = false;
+let currentUrl = '';
+let authToken = '';
+
+// ---- 重連控制 ----
+let intentionalClose = false;   // 主動關閉（DISCONNECT 或換 URL）時不自動重連
+let retryCount = 0;             // 指數退避計數
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+const MAX_BACKOFF_MS = 30000;
+
+// ---- 心跳 / 資料新鮮度 ----
+let lastPacketAt = 0;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+const STALE_MS = 3000;         // 後端 10Hz 推播，>3 秒沒資料即視為斷線
+
+// ---- 輸出節流（避免 10Hz 推播導致 UI 每秒重繪 10-20 次）----
+let pendingBridge: any = null;
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+const THROTTLE_MS = 250;
 
 // 接收主線程指令
-// message: { type: 'CONNECT' | 'DISCONNECT', url?: string }
+// message: { type: 'CONNECT' | 'DISCONNECT' | 'SEND_JSON', url?, token?, payload? }
 self.onmessage = (e: MessageEvent) => {
-  const { type, url, payload } = e.data;
+  const { type, url, token, payload } = e.data;
 
   if (type === 'CONNECT' && url) {
-    if (socket) {
-      socket.close();
-    }
+    authToken = token || '';
+    currentUrl = url;
+    // 換新連線前先標記為主動關閉，避免舊 socket 的 onclose 觸發重連造成連線風暴
+    closeSocket(true);
+    retryCount = 0;
     connectWebSocket(url);
   } else if (type === 'DISCONNECT') {
-    if (socket) {
-      socket.close();
-      socket = null;
-      isConnected = false;
-      postMessage({ type: 'STATUS', payload: { isConnected: false } });
-    }
+    clearReconnect();
+    closeSocket(true);
+    stopHeartbeat();
+    postMessage({ type: 'STATUS', payload: { isConnected: false } });
   } else if (type === 'SEND_JSON') {
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(payload));
@@ -62,66 +79,132 @@ self.onmessage = (e: MessageEvent) => {
   }
 };
 
+function closeSocket(intentional: boolean) {
+  if (!socket) return;
+  intentionalClose = intentional;
+  try {
+    socket.onclose = null; // 主動關閉時不走 onclose 重連邏輯
+    socket.close();
+  } catch {
+    /* ignore */
+  }
+  socket = null;
+}
+
+function clearReconnect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function scheduleReconnect() {
+  if (intentionalClose) return;
+  clearReconnect();
+  const delay = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** retryCount);
+  retryCount += 1;
+  reconnectTimer = setTimeout(() => connectWebSocket(currentUrl), delay);
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  lastPacketAt = Date.now();
+  heartbeatTimer = setInterval(() => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastPacketAt > STALE_MS) {
+      // 連線還在但資料停了（例如 ESP32 死了），主動視為斷線並重連
+      postMessage({ type: 'STATUS', payload: { isConnected: false, stale: true } });
+      closeSocket(false);
+      scheduleReconnect();
+    }
+  }, 1000);
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+// 將最新的 BRIDGE_STATUS 以最多 THROTTLE_MS 一次的頻率送回主線程；
+// 但跌倒事件 (is_falling) 立即送出，不延遲。
+function queueBridgeStatus(packet: any) {
+  pendingBridge = packet;
+  const urgent = packet?.ai_analysis?.is_falling === true;
+  if (urgent) {
+    flushBridgeStatus();
+    return;
+  }
+  if (!flushTimer) {
+    flushTimer = setTimeout(flushBridgeStatus, THROTTLE_MS);
+  }
+}
+
+function flushBridgeStatus() {
+  if (flushTimer) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  if (pendingBridge) {
+    postMessage({ type: 'BRIDGE_STATUS', payload: pendingBridge });
+    pendingBridge = null;
+  }
+}
+
 function connectWebSocket(url: string) {
   try {
+    intentionalClose = false;
     socket = new WebSocket(url);
 
     socket.onopen = () => {
-      isConnected = true;
+      retryCount = 0;
+      // 若設定了共享密鑰，第一則訊息送驗證
+      if (authToken && socket) {
+        socket.send(JSON.stringify({ type: 'auth', token: authToken }));
+      }
+      startHeartbeat();
       postMessage({ type: 'STATUS', payload: { isConnected: true } });
     };
 
     socket.onmessage = (event) => {
       try {
+        lastPacketAt = Date.now();
         const rawData = JSON.parse(event.data);
-        
+
         // 假設這是一個原始 CSI 封包
         if (rawData.type === 'csi' && rawData.payload) {
           const packet = rawData.payload as CSIDataPacket;
-          
+
           // --- CPU 密集型運算開始 ---
-          // 1. 計算總能量 (模擬特徵提取)
           const rawEnergy = calculateEnergy(packet.data);
-          
-          // 2. 應用濾波算法 (消除高頻噪聲)
           const filteredEnergy = energyFilter.process(rawEnergy);
-          
-          // 3. 判斷是否為「有效移動」 (簡單閾值，實際可用 ML 模型)
           const isMotion = filteredEnergy > 2500; // 假設閾值
-          
+
           const processedData: MovementData = {
             score: filteredEnergy,
-            isMotion: isMotion
+            isMotion: isMotion,
           };
-          
           // --- CPU 密集型運算結束 ---
 
-          // 只回傳處理後的結果給主線程，減輕 UI 負擔
-          postMessage({ 
-            type: 'DATA', 
-            payload: { 
-              raw: packet, // 原封包 (若 UI 需要畫圖)
-              metrics: processedData 
-            } 
+          postMessage({
+            type: 'DATA',
+            payload: {
+              raw: packet,
+              metrics: processedData,
+            },
           });
 
-        } else if (rawData.type === 'movement') {
-            // 如果後端已經傳來 movement data，直接轉發
-            postMessage({ type: 'DATA', payload: { metrics: rawData } });
-
         } else if (rawData.type === 'settings_ack') {
-            postMessage({
-              type: 'SETTINGS_ACK',
-              payload: rawData
-            });
+          postMessage({
+            type: 'SETTINGS_ACK',
+            payload: rawData,
+          });
 
         } else if (rawData.status && rawData.ai_analysis && rawData.location) {
-            // core_bridge.py 的完整狀態封包 (含三角定位座標)
-            // 包含: status, ai_analysis, location, timestamp
-            postMessage({
-              type: 'BRIDGE_STATUS',
-              payload: rawData
-            });
+          // core_bridge.py 的完整狀態封包 (含三角定位座標)
+          // 包含: status, ai_analysis, location, timestamp。節流後轉發。
+          queueBridgeStatus(rawData);
         }
 
       } catch (err) {
@@ -130,10 +213,10 @@ function connectWebSocket(url: string) {
     };
 
     socket.onclose = () => {
-      isConnected = false;
+      stopHeartbeat();
       postMessage({ type: 'STATUS', payload: { isConnected: false } });
-      // 可以在這裡實作自動重連邏輯
-      setTimeout(() => connectWebSocket(url), 3000);
+      // 非主動關閉才自動重連（指數退避）
+      scheduleReconnect();
     };
 
     socket.onerror = (err) => {
@@ -143,6 +226,7 @@ function connectWebSocket(url: string) {
   } catch (err) {
     console.error('Worker: Connection Error', err);
     postMessage({ type: 'ERROR', payload: String(err) });
+    scheduleReconnect();
   }
 }
 

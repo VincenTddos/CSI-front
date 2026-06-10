@@ -5,10 +5,8 @@ import {
 import { Activity, Pill, Droplet, Scale, LineChart as ChartIcon, HeartPulse, ClipboardList, RefreshCw } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { cn } from '../lib/utils';
-import { Patient } from '../types';
-import { mockPatients } from '../lib/mockData';
+import { usePatients } from '../hooks/usePatients';
 
-const PATIENTS_KEY = 'csi_patients';
 const DAILY_KEY = 'csi_daily_health';
 const CHECKUP_KEY = 'csi_routine_checkup';
 const ALERTS_KEY = 'csi_alerts';
@@ -36,7 +34,7 @@ function generateWeeklyTrend(patientId: string) {
 
 export function HealthReports() {
   const { user } = useUser();
-  const patients: Patient[] = load(PATIENTS_KEY) || mockPatients;
+  const { patients, loading, error } = usePatients();
   const dailyRecords: any[] = load(DAILY_KEY) || [];
   const checkupRecords: any[] = load(CHECKUP_KEY) || [];
   const alerts: any[] = load(ALERTS_KEY) || [];
@@ -52,7 +50,7 @@ export function HealthReports() {
   const patientAlerts = alerts.filter((a: any) => a.room?.includes(patient?.roomNumber));
 
   const handleSwitchPatient = () => {
-    setSelectedPatientIndex(prev => (prev + 1) % patients.length);
+    if (patients.length) setSelectedPatientIndex(prev => (prev + 1) % patients.length);
   };
 
   const renderStatus = (status: string) => {
@@ -64,6 +62,12 @@ export function HealthReports() {
     }
   };
 
+  if (loading) {
+    return <div className="flex items-center justify-center h-full text-slate-400">載入中…</div>;
+  }
+  if (error) {
+    return <div className="flex items-center justify-center h-full text-red-500">{error}</div>;
+  }
   if (!patient) {
     return <div className="flex items-center justify-center h-full text-slate-400">尚無受護者資料</div>;
   }

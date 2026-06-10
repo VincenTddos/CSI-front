@@ -1,17 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { RefreshCcw, HeartPulse, ClipboardList, Pill } from 'lucide-react';
-import { mockPatients } from '../lib/mockData';
 import { useUser } from '../contexts/UserContext';
+import { usePatients } from '../hooks/usePatients';
 
 const DAILY_STORAGE_KEY = 'csi_daily_health';
 const CHECKUP_STORAGE_KEY = 'csi_routine_checkup';
-const PATIENTS_STORAGE_KEY = 'csi_patients';
-
-function loadSavedPatients() {
-  const saved = localStorage.getItem(PATIENTS_STORAGE_KEY);
-  if (saved) { try { return JSON.parse(saved); } catch { /* ignore */ } }
-  return mockPatients;
-}
 
 function loadDailyRecords() {
   const saved = localStorage.getItem(DAILY_STORAGE_KEY);
@@ -27,7 +20,7 @@ function loadCheckupRecords() {
 
 export function FamilyHealthLog() {
   const { user } = useUser();
-  const [patients] = useState(loadSavedPatients);
+  const { patients, loading, error } = usePatients();
   const [currentPatientIndex, setCurrentPatientIndex] = useState(0);
 
   const patient = patients[currentPatientIndex];
@@ -35,12 +28,22 @@ export function FamilyHealthLog() {
   const dailyRecords = loadDailyRecords();
   const checkupRecords = loadCheckupRecords();
 
-  const dailyRecord = dailyRecords.find((r: any) => r.patientId === patient.id);
-  const checkupRecord = checkupRecords.find((r: any) => r.patientId === patient.id);
+  const dailyRecord = patient ? dailyRecords.find((r: any) => r.patientId === patient.id) : undefined;
+  const checkupRecord = patient ? checkupRecords.find((r: any) => r.patientId === patient.id) : undefined;
 
   const handleSwitchPatient = () => {
-    setCurrentPatientIndex((prev) => (prev + 1) % patients.length);
+    if (patients.length) setCurrentPatientIndex((prev) => (prev + 1) % patients.length);
   };
+
+  if (loading) {
+    return <div className="p-6 h-full flex items-center justify-center text-slate-400">載入中…</div>;
+  }
+  if (error) {
+    return <div className="p-6 h-full flex items-center justify-center text-red-500">{error}</div>;
+  }
+  if (!patient) {
+    return <div className="p-6 h-full flex items-center justify-center text-slate-400">尚無住民資料</div>;
+  }
 
   const renderStatus = (status: string) => {
     switch (status) {

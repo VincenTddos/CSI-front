@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import { isDeveloperIdentity } from '../lib/roles';
+import { initialsAvatar } from '../lib/avatar';
 
 export interface RegisterData {
   realName: string;
@@ -38,6 +39,14 @@ interface UserContextType {
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
+
+// ⚠️ 僅供「未連 Supabase」的本機開發 fallback：用 SHA-256 雜湊密碼後再存 localStorage，
+// 避免明文落地。正式環境一律走 Supabase Auth（bcrypt + 加鹽），不會用到此函式。
+// 註：SHA-256 無鹽僅是最低限度防護，不可視為正式密碼儲存方案。
+async function hashPassword(plain: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(plain));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 // 帳號 (username) 與 Supabase Email 的對應：以合成網域保留「帳號」UX
 // 註：使用合成 Email 時，請於 Supabase → Auth → Providers 關閉 "Confirm email"。
@@ -101,7 +110,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       id: userId,
       name: realName || fallbackName,
       role,
-      avatar: avatar || avatarUrl || `https://picsum.photos/seed/${realName || fallbackName}/150/150`,
+      avatar: avatar || avatarUrl || initialsAvatar(realName || fallbackName),
     });
   };
 
@@ -156,13 +165,14 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       return { success: true, message: '登入成功' };
     }
 
-    // -- fallback：localStorage（username + password 比對；角色取自帳號）--
-    const foundUser = getStoredUsers().find(u => u.username === username && u.password === password);
+    // -- fallback：localStorage（username + 密碼雜湊 比對；角色取自帳號）--
+    const hashed = await hashPassword(password);
+    const foundUser = getStoredUsers().find(u => u.username === username && u.password === hashed);
     if (!foundUser) return { success: false, message: '帳號或密碼錯誤' };
     const role = applyDeveloperOverride(foundUser.role, undefined, foundUser.username);
     const newUser = decorateUser({
       id: foundUser.id, name: foundUser.realName, role,
-      avatar: `https://picsum.photos/seed/${foundUser.realName}/150/150`,
+      avatar: initialsAvatar(foundUser.realName),
     });
     setUser(newUser);
     localStorage.setItem('currentUser', JSON.stringify(newUser));
@@ -196,7 +206,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     // -- fallback：localStorage --
     const allUsers = getStoredUsers();
     if (allUsers.some(u => u.username === data.username)) return { success: false, message: '帳號已被註冊' };
-    allUsers.push({ ...data, id: Math.random().toString(36).substr(2, 9) });
+    allUsers.push({ ...data, password: await hashPassword(data.password), id: Math.random().toString(36).substr(2, 9) });
     saveStoredUsers(allUsers);
     return { success: true, message: '註冊成功，請使用帳號登入' };
   };
@@ -244,7 +254,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     const role = applyDeveloperOverride(found.role, payload.email);
     const newUser = decorateUser({
       id: found.id, name: found.realName, role,
-      avatar: payload.picture || `https://picsum.photos/seed/${found.realName}/150/150`,
+      avatar: payload.picture || initialsAvatar(found.realName),
     });
     setUser(newUser);
     localStorage.setItem('currentUser', JSON.stringify(newUser));
@@ -287,7 +297,7 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     if (allUsers.some(u => u.username === data.username)) {
       return { success: false, message: '帳號已被註冊' };
     }
-    allUsers.push({ ...data, id: Math.random().toString(36).substr(2, 9) });
+    allUsers.push({ ...data, password: await hashPassword(data.password), id: Math.random().toString(36).substr(2, 9) });
     saveStoredUsers(allUsers);
     return { success: true, message: `已建立帳號「${data.username}」(${data.role})` };
   };

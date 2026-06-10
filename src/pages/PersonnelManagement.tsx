@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { UserRole, Patient } from '../types';
-import { mockPatients } from '../lib/mockData';
+import { usePatients } from '../hooks/usePatients';
 
 const PATIENTS_STORAGE_KEY = 'csi_patients';
 const PERSONNEL_STORAGE_KEY = 'csi_personnel';
@@ -15,7 +15,7 @@ const PERSONNEL_STORAGE_KEY = 'csi_personnel';
 function loadPatients(): Patient[] {
   const saved = localStorage.getItem(PATIENTS_STORAGE_KEY);
   if (saved) { try { return JSON.parse(saved); } catch { /* ignore */ } }
-  return mockPatients;
+  return [];
 }
 
 function savePatientsList(patients: Patient[]) {
@@ -79,8 +79,12 @@ export function PersonnelManagement() {
   const [editingPersonnel, setEditingPersonnel] = useState<Personnel | null>(null);
   const [isNewPersonnel, setIsNewPersonnel] = useState(false);
 
-  // — Patients state —
+  // — Patients state —（初始用本機快取，掛載後以真實住民資料覆蓋）
   const [patients, setPatients] = useState<Patient[]>(loadPatients);
+  const { patients: remotePatients } = usePatients();
+  useEffect(() => {
+    if (remotePatients.length) setPatients(remotePatients);
+  }, [remotePatients]);
   const [patientSearch, setPatientSearch] = useState('');
   const [isPatientModalOpen, setIsPatientModalOpen] = useState(false);
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);

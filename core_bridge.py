@@ -120,6 +120,12 @@ def parse_args():
         default=None,
         help="BLE device address to connect first (e.g. E8:F6:0A:85:9D:02)",
     )
+    parser.add_argument(
+        "--record",
+        type=str,
+        default=None,
+        help="Record movement score to a jsonl file for offline analysis (csi_pipeline.py)",
+    )
     return parser.parse_args()
 
 
@@ -146,6 +152,9 @@ WIFI_SCAN_ROUNDS: int = 3                # 每次定位做幾輪掃描取平均
 WS_HOST: str = "0.0.0.0"
 WS_PORT: int = 8765
 WS_BROADCAST_INTERVAL: float = 0.1       # 推播頻率 (秒) — 10Hz
+# 共享密鑰：若設定（環境變數 WICARE_WS_TOKEN），client 連線後第一則訊息必須是
+# {"type":"auth","token":"<密鑰>"} 才會被加入推播名單；未設定則停用驗證（純區網開發）。
+WS_AUTH_TOKEN: str = os.environ.get("WICARE_WS_TOKEN", "")
 
 # -- 跌倒偵測 --
 # 使用 ESPectre 原生判斷：mvmt >= thr → MOTION（韌體自動校正環境）
@@ -157,6 +166,9 @@ SIMULATE_MODE: bool = False
 # -- BLE 模式旗標 (由命令列參數控制) --
 BLE_MODE: bool = False
 BLE_ADDRESS: Optional[str] = None
+
+# -- 錄製檔 (--record)：movement score 寫入 jsonl，供 csi_pipeline.py 離線分析 --
+RECORD_FILE = None  # 開啟後為 file object
 
 # -- ESPectre BLE GATT UUIDs (v2.7.0+) --
 BLE_SERVICE_UUID      = "d33ff46b-2203-4775-bc6f-b3a2c36af8f0"
@@ -201,8 +213,10 @@ class SharedState:
         self._fall_detected: bool = False
         self._prev_fall_state: bool = False   # 上一個廣播週期的跌倒狀態 (邊緣偵測用)
 
-        # -- LINE Notify 相關 --
-        self._line_token: str = ""
+        # -- LINE Messaging API 相關 --
+        # channel token 與接收者 userId 預設由環境變數帶入，前端 settings 可覆寫。
+        self._line_token: str = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+        self._line_user_id: str = os.environ.get("LINE_TARGET_USER_ID", "")
         self._last_line_notify_at: float = 0.0  # monotonic time
 
         self._settings = {
@@ -261,7 +275,8 @@ class SharedState:
             return (self._location_x, self._location_y)
 
     # ---- 子系統狀態 ---- #
-    def set_serial_online(self, status: bool) -> None:
+    def set_sensor_online(self, status: bool) -> None:
+        # 感測資料源（Serial 或 BLE）是否在線
         with self._lock:
             self._serial_online = status
 
@@ -308,8 +323,11 @@ class SharedState:
                     except (TypeError, ValueError):
                         logger.warning("[Settings] Ignoring invalid %s=%r", key, value)
                 elif key == "lineToken" and isinstance(value, str):
-                    # 儲存 token 但不放入廣播用的 _settings（避免 Token 外洩到前端）
+                    # 儲存 channel access token，但不放入廣播用的 _settings（避免外洩到前端）
                     self._line_token = value.strip()
+                elif key == "lineUserId" and isinstance(value, str):
+                    # 接收者 userId，同樣不廣播給前端
+                    self._line_user_id = value.strip()
             self._settings["lastApplied"] = datetime.now(timezone.utc).isoformat()
             if self._settings.get("thresholdMode") == "manual":
                 self._settings["bleWriteStatus"] = "queued"
@@ -342,6 +360,10 @@ class SharedState:
         with self._lock:
             return self._line_token
 
+    def get_line_user_id(self) -> str:
+        with self._lock:
+            return self._line_user_id
+
     def check_and_arm_line_notify(self) -> Optional[str]:
         """
         每個廣播週期呼叫一次。
@@ -360,7 +382,7 @@ class SharedState:
             if not self._settings.get("lineNotifyEnabled", False):
                 return None
             token = self._line_token
-            if not token:
+            if not (token and self._line_user_id):
                 return None
             now = time.monotonic()
             if now - self._last_line_notify_at < self.LINE_NOTIFY_COOLDOWN_SEC:
@@ -405,7 +427,8 @@ class FallDetector:
     def update(self, score: float, is_motion: Optional[bool] = None) -> bool:
         now = time.monotonic()
         if now < self._active_until:
-            self._push(score)
+            # hold 期間不 push：避免跌倒尖峰分數持續墊高 baseline，
+            # 否則連續跌倒的第二次偵測靈敏度會下降。
             return True
 
         recent = self._history[-self.history_size :]
@@ -422,11 +445,17 @@ class FallDetector:
         if detected:
             self._last_trigger_at = now
             self._active_until = now + self.hold_sec
+            # 觸發尖峰本身也不 push，保持 baseline 乾淨。
+            return True
 
         self._push(score)
-        return detected
+        return False
 
     def _push(self, score: float) -> None:
+        # 只把不高於 baseline_limit 的「安靜值」納入 baseline，
+        # 避免一般活動的高分污染基準線。
+        if score > self.baseline_limit:
+            return
         self._history.append(score)
         if len(self._history) > self.history_size:
             self._history = self._history[-self.history_size :]
@@ -436,23 +465,181 @@ fall_detector = FallDetector()
 
 
 # =========================================================================== #
-#  LINE Notify 推播 (使用內建 urllib，無需額外安裝)
+#  感測器融合跌倒偵測 (Sensor Fusion)
+#  條件一：movement score 突發尖峰 (沿用 FallDetector)
+#  條件二：尖峰後位置停止移動 (跌倒者通常無法立即起身移動)
+#  相較單純尖峰偵測，可過濾「劇烈但正常」的動作（快速坐下、彎腰撿物後續走動）。
 # =========================================================================== #
 
-def send_line_notify(token: str, message: str) -> None:
+class FusionFallDetector:
+    """融合「動作尖峰」與「位置靜止」雙條件的跌倒偵測器。"""
+
+    # 注意：WIFI_SCAN_INTERVAL=5s，觀察窗內可能僅 1-2 個定位點。
+    # demo 真硬體時可視掃描頻率把觀察窗拉長到 10-12s。
+    STILLNESS_WINDOW_SEC = 6.0    # 尖峰後觀察位置的時間窗
+    STILLNESS_DIST_M     = 0.8    # 時間窗內總位移 < 0.8m 視為靜止
+    LOCATION_MAX_AGE_SEC = 15.0   # 定位資料超過此秒數視為過期，退回單條件
+
+    def __init__(self, base_detector: "FallDetector"):
+        self.base = base_detector
+        self._pending_spike_at: Optional[float] = None
+        self._spike_location: Optional[tuple] = None
+        self._location_history: deque = deque(maxlen=30)  # (t, x, y)
+
+    def feed_location(self, x: Optional[float], y: Optional[float]) -> None:
+        """由 wifi_location_thread 在每次定位成功時呼叫。"""
+        if x is not None and y is not None:
+            self._location_history.append((time.monotonic(), x, y))
+
+    def update(self, score: float, is_motion: Optional[bool] = None) -> bool:
+        now = time.monotonic()
+        spike = self.base.update(score, is_motion)
+
+        # --- 階段一：偵測到動作尖峰，記下當下位置，進入觀察期 --- #
+        if spike and self._pending_spike_at is None:
+            self._pending_spike_at = now
+            self._spike_location = self._latest_location()
+            logger.info("[Fusion] 動作尖峰，進入位置觀察期 (%.1fs)",
+                        self.STILLNESS_WINDOW_SEC)
+            return False  # 暫不觸發，等位置確認
+
+        # --- 階段二：觀察期內，檢查位置是否靜止 --- #
+        if self._pending_spike_at is not None:
+            elapsed = now - self._pending_spike_at
+            if elapsed < self.STILLNESS_WINDOW_SEC:
+                return False  # 還在觀察
+
+            # 觀察期結束 → 結算位移
+            displacement = self._displacement_since(self._pending_spike_at)
+            self._pending_spike_at = None
+
+            if displacement is None:
+                # 定位資料不足/過期 → 退回單條件（保守：仍然觸發）
+                logger.info("[Fusion] 無有效定位，退回單條件觸發")
+                return True
+
+            if displacement < self.STILLNESS_DIST_M:
+                logger.info("[Fusion] 尖峰後位移 %.2fm < %.1fm → 確認跌倒風險",
+                            displacement, self.STILLNESS_DIST_M)
+                return True
+            logger.info("[Fusion] 尖峰後位移 %.2fm，判定為正常活動，抑制警報",
+                        displacement)
+            return False
+
+        return False
+
+    # ---- 內部輔助 ---- #
+    def _latest_location(self) -> Optional[tuple]:
+        if not self._location_history:
+            return None
+        t, x, y = self._location_history[-1]
+        if time.monotonic() - t > self.LOCATION_MAX_AGE_SEC:
+            return None
+        return (x, y)
+
+    def _displacement_since(self, t0: float) -> Optional[float]:
+        """計算 t0 之後的累計位移（公尺）；資料不足回傳 None。"""
+        pts = [(t, x, y) for (t, x, y) in self._location_history if t >= t0]
+        if len(pts) < 2:
+            return None
+        total = 0.0
+        for (_, x1, y1), (_, x2, y2) in zip(pts, pts[1:]):
+            total += math.hypot(x2 - x1, y2 - y1)
+        return total
+
+
+fusion_detector = FusionFallDetector(fall_detector)
+
+
+# =========================================================================== #
+#  久未活動偵測 (Inactivity Detector)
+#  連續 N 分鐘 movement score 低於閾值 → 異常靜止警報（與跌倒互補的反向風險）
+# =========================================================================== #
+
+class InactivityDetector:
+    INACTIVE_SCORE_MAX  = 3.0          # 低於此分數視為「無活動」
+    INACTIVE_MINUTES    = 45.0         # 連續無活動達此分鐘數 → 告警
+    QUIET_HOURS         = (22, 7)      # 夜間睡眠時段 (22:00–07:00) 不告警
+    REALERT_COOLDOWN    = 30 * 60.0    # 告警後 30 分鐘內不重複
+
+    def __init__(self):
+        self._inactive_since: Optional[float] = None
+        self._last_alert_at: float = 0.0
+        self._alert_active: bool = False
+
+    def _in_quiet_hours(self) -> bool:
+        h = datetime.now().hour
+        start, end = self.QUIET_HOURS
+        return (h >= start or h < end) if start > end else (start <= h < end)
+
+    def update(self, score: float) -> Optional[str]:
+        """每個廣播週期呼叫。回傳告警訊息字串（需發送）或 None。"""
+        now = time.monotonic()
+
+        # ---- 有活動 → 重置計時、解除狀態 ---- #
+        if score > self.INACTIVE_SCORE_MAX:
+            if self._alert_active:
+                logger.info("[Inactivity] 偵測到活動，異常靜止狀態解除")
+            self._inactive_since = None
+            self._alert_active = False
+            return None
+
+        # ---- 無活動 → 開始/持續計時 ---- #
+        if self._inactive_since is None:
+            self._inactive_since = now
+            return None
+
+        inactive_min = (now - self._inactive_since) / 60.0
+        if inactive_min < self.INACTIVE_MINUTES:
+            return None
+        if self._in_quiet_hours():
+            return None  # 夜間睡眠，不打擾
+        if self._alert_active or (now - self._last_alert_at) < self.REALERT_COOLDOWN:
+            return None
+
+        self._alert_active = True
+        self._last_alert_at = now
+        return (
+            f"\n🟡 Wi-Care 異常靜止提醒\n"
+            f"被照護者已連續 {inactive_min:.0f} 分鐘無明顯活動，\n"
+            f"且目前非睡眠時段，建議前往查看。\n"
+            f"時間：{datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        )
+
+
+inactivity_detector = InactivityDetector()
+
+
+# =========================================================================== #
+#  LINE 推播 (使用內建 urllib，無需額外安裝)
+#
+#  ⚠️ LINE Notify 已於 2025-03-31 永久終止服務，故改用 Messaging API 的
+#     push message 端點。需要 Channel Access Token 與接收者 userId。
+#     userId 可從 webhook 事件或 LINE Official Account Manager 取得。
+# =========================================================================== #
+
+def send_line_push(channel_token: str, user_id: str, message: str) -> None:
     """
-    透過 LINE Notify API 發送推播訊息。
+    透過 LINE Messaging API 的 push message 發送推播訊息。
     在背景執行緒中呼叫，不阻塞主事件迴圈。
-    API 文件: https://notify-api.line.me/api/notify
+    API 文件: https://developers.line.biz/en/reference/messaging-api/#send-push-message
     """
+    if not (channel_token and user_id):
+        logger.warning("[LINE] 缺少 channel token 或 userId，略過推播")
+        return
     import urllib.request
-    import urllib.parse
     try:
-        data = urllib.parse.urlencode({"message": message}).encode("utf-8")
+        data = json.dumps({
+            "to": user_id,
+            "messages": [{"type": "text", "text": message}],
+        }).encode("utf-8")
         req = urllib.request.Request(
-            "https://notify-api.line.me/api/notify",
+            "https://api.line.me/v2/bot/message/push",
             data=data,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                "Authorization": f"Bearer {channel_token}",
+                "Content-Type": "application/json",
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -501,6 +688,8 @@ def _supabase_request(method: str, path: str, body: Optional[dict] = None,
 # ---- 通知升級（跌倒未確認 → X 分鐘後再次推播）----
 ESCALATE_AFTER_SEC = 120.0
 _pending_falls: list = []   # [{id, at(monotonic), done}]
+# _pending_falls 由事件迴圈的 run_in_executor 背景執行緒共用讀寫，需鎖保護。
+_pending_falls_lock = threading.Lock()
 
 
 def supabase_insert_fall_event(score: float, loc_x, loc_y) -> None:
@@ -517,28 +706,45 @@ def supabase_insert_fall_event(score: float, loc_x, loc_y) -> None:
     }, prefer="return=representation")
     try:
         if rows and isinstance(rows, list) and rows[0].get("id"):
-            _pending_falls.append({"id": rows[0]["id"], "at": time.monotonic(), "done": False})
+            with _pending_falls_lock:
+                _pending_falls.append({"id": rows[0]["id"], "at": time.monotonic(), "done": False})
     except Exception:
         pass
 
 
-def process_escalations(line_token: str) -> None:
+def supabase_insert_inactivity_event(score: float) -> None:
+    """異常靜止事件沿用 fall_events 表（以 event_type 區分）。"""
+    _supabase_request("POST", "fall_events", {
+        "device_id": WICARE_DEVICE_ID or None,
+        "movement_score": round(score, 2),
+        "event_type": "異常靜止",
+        "confidence": 80.0,
+        "status": "pending",
+        "detected_at": datetime.now(timezone.utc).isoformat(),
+    }, prefer="return=minimal")
+
+
+def process_escalations(line_token: str, line_user_id: str) -> None:
     """檢查逾時未確認的跌倒事件，仍為 pending 則發送升級通知（在背景執行緒呼叫）。"""
     now = time.monotonic()
-    for p in _pending_falls:
+    with _pending_falls_lock:
+        pending_snapshot = list(_pending_falls)
+    for p in pending_snapshot:
         if p["done"] or (now - p["at"]) < ESCALATE_AFTER_SEC:
             continue
         p["done"] = True
         rows = _supabase_request("GET", f"fall_events?id=eq.{p['id']}&select=status")
         status = rows[0]["status"] if rows and isinstance(rows, list) else None
         if status == "pending" and line_token:
-            send_line_notify(
+            send_line_push(
                 line_token,
+                line_user_id,
                 "\n🚨【升級通知】\n跌倒警報已超過 2 分鐘無人確認，\n請立即派員前往查看！",
             )
             logger.info("[LINE] 已發送跌倒升級通知 (event=%s)", p["id"])
     # 清掉已處理的，避免清單無限長
-    _pending_falls[:] = [p for p in _pending_falls if not p["done"]]
+    with _pending_falls_lock:
+        _pending_falls[:] = [p for p in _pending_falls if not p["done"]]
 
 
 def supabase_upsert_activity(bucket_iso: str, level: str, avg_score: float,
@@ -560,7 +766,7 @@ def supabase_upsert_activity(bucket_iso: str, level: str, avg_score: float,
 
 
 def classify_activity_level(avg_score: float) -> str:
-    """將平均移動分數對應到 6 級活動狀態（與前端 HAR 分類一致）。"""
+    """將平均移動分數對應到 5 級活動狀態（睡眠/靜坐/輕微活動/行走/激烈活動）。"""
     if avg_score < 5:
         return "睡眠"
     if avg_score < 15:
@@ -585,6 +791,37 @@ def supabase_device_heartbeat(status: str = "online") -> None:
 
 
 def build_threshold_command(settings: dict, movement_window: deque) -> Optional[str]:
+    r"""
+    統計式自適應閾值演算法 — 依最近 N 筆移動分數估計動作偵測閾值 T。
+
+    設最近 N 筆樣本 S = {s_1, ..., s_N}（movement_window，N ≤ 200；需 N ≥ 20 才啟動）。
+
+    步驟一｜Hampel 離群值過濾（hampelFilterEnabled，且 N ≥ 7 時）
+        m   = median(S)
+        MAD = median(|s_i - m|)
+        S'  = { s_i ∈ S : |s_i - m| ≤ 3 · 1.4826 · MAD }
+        （1.4826 為常態分布下 MAD→標準差的尺度因子；即 3-sigma 穩健門檻。）
+        若 |S'| < 10 則退回原始 S，避免過度過濾。
+
+    步驟二｜敏感度因子（sensitivity α ∈ [0,100]，預設 75）
+        f(α) = 1.3 − 0.6 · (α / 100)
+        α 越大 → f 越小 → 閾值越低 → 越容易觸發。f∈[0.7, 1.3]。
+
+    步驟三｜閾值估計（依 thresholdMode）
+        auto  : T = P95(S') · 1.1  · f(α)   # 以第 95 百分位估環境噪聲上界，乘安全裕度
+        min   : T = P75(S') · 0.85 · f(α)   # 高敏感度模式，以第 75 百分位估計
+        manual: T = T_manual                # 使用者手動指定
+
+    步驟四｜下限保護
+        T_final = max(T, MIN_BLE_THRESHOLD)，MIN_BLE_THRESHOLD = 0.05
+        防止閾值趨近 0 導致 movement/threshold 比值爆炸。
+
+    最終回傳 "SET_THRESHOLD:{T:.6f}"，由呼叫端經 BLE GATT Control characteristic
+    下發至 ESP32-S3 韌體；資料不足時回傳 None。
+
+    此機制讓系統在不同房間/擺設下自動校正，無需人工調參，是 Wi-Fi 感測
+    cross-domain（跨環境）問題的工程化緩解手段。
+    """
     mode = settings.get("thresholdMode", "auto")
     if mode == "manual":
         threshold = settings.get("manualThreshold")
@@ -675,7 +912,7 @@ def serial_reader_thread() -> None:
                 dsrdtr=False,
                 rtscts=False,
             )
-            state.set_serial_online(True)
+            state.set_sensor_online(True)
             logger.info("[Serial] Connected to %s", SERIAL_PORT)
 
             # ---- 持續讀取迴圈 ---- #
@@ -693,20 +930,24 @@ def serial_reader_thread() -> None:
                 match = score_pattern.search(line)
                 if match:
                     try:
-                        # mvmt 是 movement/threshold 比值，已是相對分數
-                        # 乘 100 轉成百分比 (0-100+)，前端再 clamp 到 0-100
+                        # mvmt 是 movement/threshold 比值，已是相對分數。
+                        # raw_score 乘 100 但「不」clamp，供跌倒尖峰偵測使用
+                        # （與 BLE 模式一致；spike_threshold=140 需要 >100 的尖峰才會觸發）。
+                        # ui_score 才 clamp 到 0-100，僅供前端顯示。
                         raw_mvmt = float(match.group(1))
-                        score = min(100.0, raw_mvmt * 100.0)
-                        state.set_movement_score(score)
+                        raw_score = raw_mvmt * 100.0
+                        ui_score = min(100.0, raw_score)
+                        state.set_movement_score(ui_score)
                         state.set_data_source("hardware_serial")
-                        state.set_serial_online(True)
+                        state.set_sensor_online(True)
                         # ESPectre 的 MOTION 只代表一般活動，不等同跌倒。
                         # 跌倒風險改由 movement score 的突發尖峰判定，避免走動就觸發警報。
                         m = motion_pattern.search(line)
                         is_motion = m.group(1).upper() == "MOTION" if m else None
-                        state.set_fall_detected(fall_detector.update(score, is_motion))
-                        logger.info("[Serial] mvmt=%.4f score=%.1f motion=%s",
-                                     raw_mvmt, score,
+                        # 感測器融合：動作尖峰 + 位置靜止雙條件確認
+                        state.set_fall_detected(fusion_detector.update(raw_score, is_motion))
+                        logger.info("[Serial] mvmt=%.4f raw=%.1f ui=%.1f motion=%s",
+                                     raw_mvmt, raw_score, ui_score,
                                      m.group(1) if m else "?")
                     except ValueError:
                         logger.warning("[Serial] Cannot parse mvmt: %s", match.group(1))
@@ -714,13 +955,13 @@ def serial_reader_thread() -> None:
                     logger.debug("[Serial] Unexpected data: %s", line[:120])
 
         except serial.SerialException as exc:
-            state.set_serial_online(False)
+            state.set_sensor_online(False)
             state.set_movement_score(0.0)
             state.set_fall_detected(False)
             logger.warning("[Serial] Port error: %s", exc)
 
         except Exception as exc:
-            state.set_serial_online(False)
+            state.set_sensor_online(False)
             state.set_movement_score(0.0)
             state.set_fall_detected(False)
             logger.error("[Serial] Unexpected error: %s", exc)
@@ -732,7 +973,7 @@ def serial_reader_thread() -> None:
                     ser.close()
                 except Exception:
                     pass
-            state.set_serial_online(False)
+            state.set_sensor_online(False)
 
         # ---- 斷線後等待再重試 ---- #
         if not shutdown_event.is_set():
@@ -781,13 +1022,14 @@ async def _ble_reader_async() -> None:
             is_motion = movement >= effective_threshold
             state.set_ble_movement_metrics(movement, effective_threshold, raw_score, ui_score)
             state.set_data_source("hardware_ble")
-            state.set_serial_online(True)
+            state.set_sensor_online(True)
             if settings.get("algorithm") == "ml":
                 # Lightweight ML-style gate for demo hardware without an embedded model file.
                 # Use display dynamics, not raw ratio, because a stale BLE threshold can be too small.
                 state.set_fall_detected(ui_score >= 90.0 and is_motion)
             else:
-                state.set_fall_detected(fall_detector.update(raw_score, is_motion))
+                # 感測器融合：動作尖峰 + 位置靜止雙條件確認
+                state.set_fall_detected(fusion_detector.update(raw_score, is_motion))
             logger.info("[BLE] mvmt=%.4f thr=%.4f raw_score=%.1f%% ui_score=%.1f motion=%s",
                         movement, effective_threshold, raw_score, ui_score, is_motion)
 
@@ -810,7 +1052,7 @@ async def _ble_reader_async() -> None:
 
             if device is None:
                 logger.warning("[BLE] ESPectre not found, retrying in 5s...")
-                state.set_serial_online(False)
+                state.set_sensor_online(False)
                 state.set_movement_score(0.0)
                 state.set_fall_detected(False)
                 state.set_data_source("device_not_found")
@@ -821,7 +1063,7 @@ async def _ble_reader_async() -> None:
 
             async with BleakClient(device.address, timeout=30.0) as client:
                 last_telemetry_at = time.time()
-                state.set_serial_online(False)
+                state.set_sensor_online(False)
                 state.set_movement_score(0.0)
                 state.set_fall_detected(False)
                 state.set_data_source("connected_waiting_telemetry")
@@ -833,7 +1075,7 @@ async def _ble_reader_async() -> None:
                 while not shutdown_event.is_set() and client.is_connected:
                     if time.time() - last_telemetry_at > 20.0:
                         logger.warning("[BLE] Telemetry timeout, reconnecting...")
-                        state.set_serial_online(False)
+                        state.set_sensor_online(False)
                         state.set_movement_score(0.0)
                         state.set_fall_detected(False)
                         state.set_data_source("telemetry_timeout")
@@ -872,7 +1114,7 @@ async def _ble_reader_async() -> None:
         except Exception as exc:
             logger.warning("[BLE] Error: %s", exc)
 
-        state.set_serial_online(False)
+        state.set_sensor_online(False)
         state.set_movement_score(0.0)
         state.set_fall_detected(False)
 
@@ -900,7 +1142,7 @@ def simulated_serial_thread() -> None:
     適用於前端開發測試。
     """
     logger.info("[Serial-SIM] Simulated serial thread started.")
-    state.set_serial_online(True)
+    state.set_sensor_online(True)
 
     # 模擬參數
     base_score = 10.0        # 基底分數 (靜止狀態)
@@ -927,13 +1169,15 @@ def simulated_serial_thread() -> None:
             logger.info("[Serial-SIM] Simulated fall event! Score=%.1f", score)
 
         state.set_movement_score(round(score, 2))
+        # 模擬模式刻意走純尖峰偵測（不經 fusion）：simulated_wifi_thread 的座標持續移動，
+        # 會被融合判定為「正常活動」而抑制警報，故 sim demo 直接用 FallDetector 即時觸發。
         state.set_fall_detected(fall_detector.update(score, score >= 100.0))
         logger.debug("[Serial-SIM] Score=%.2f", score)
 
         tick += 1
         shutdown_event.wait(timeout=1.0)
 
-    state.set_serial_online(False)
+    state.set_sensor_online(False)
     logger.info("[Serial-SIM] Thread stopped.")
 
 
@@ -1023,6 +1267,7 @@ def wifi_location_thread() -> None:
             est_x, est_y = float(estimated[0]), float(estimated[1])
 
             state.set_location(est_x, est_y)
+            fusion_detector.feed_location(est_x, est_y)  # 餵給融合偵測器做位置靜止判定
             state.set_wifi_online(True)
             logger.info("[WiFi] Location: x=%.2f, y=%.2f", est_x, est_y)
 
@@ -1082,13 +1327,32 @@ def simulated_wifi_thread() -> None:
 connected_clients: set = set()
 
 
+async def _authenticate(websocket) -> bool:
+    """
+    若有設定 WS_AUTH_TOKEN，要求 client 的第一則訊息為
+    {"type":"auth","token":"<密鑰>"}，token 相符才放行。
+    """
+    try:
+        raw = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+        packet = json.loads(raw)
+    except Exception:
+        return False
+    return packet.get("type") == "auth" and packet.get("token") == WS_AUTH_TOKEN
+
+
 async def ws_handler(websocket) -> None:
     """
     處理單一 WebSocket 連線的生命週期。
-    用戶連線時加入 connected_clients 集合；斷線時自動移除。
+    通過驗證後加入 connected_clients 集合；斷線時自動移除。
     """
     client_addr = websocket.remote_address
     logger.info("[WS] New connection: %s", client_addr)
+
+    if WS_AUTH_TOKEN and not await _authenticate(websocket):
+        logger.warning("[WS] 驗證失敗，拒絕連線: %s", client_addr)
+        await websocket.close(code=4001, reason="auth required")
+        return
+
     connected_clients.add(websocket)
 
     try:
@@ -1161,27 +1425,13 @@ def build_broadcast_payload() -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def build_movement_payload() -> str:
-    """
-    組裝與前端 csi.worker.ts 'movement' 分支相容的封包格式。
-    worker 會在收到 type='movement' 時直接透過 postMessage 轉發給 UI。
-    """
-    score = state.get_movement_score()
-    ble_metrics = state.get_ble_movement_metrics()
-    payload = {
-        "type": "movement",
-        "score": round(score, 2),
-        "rawScore": round(ble_metrics["raw_movement_score"], 2),
-        "isMotion": score > 2.0,  # 簡易判斷：分數 > 2 視為有活動
-    }
-    return json.dumps(payload, ensure_ascii=False)
-
-
 async def broadcast_loop() -> None:
     """
-    每秒 (1Hz) 將最新資料推播給所有已連線的前端。
+    以 WS_BROADCAST_INTERVAL 的頻率（預設 10Hz）將最新資料推播給所有已連線的前端。
+    每輪只送一則完整狀態封包（BRIDGE_STATUS）；前端 movement metrics 由其 ai_analysis
+    欄位推導，不再額外送 movement 子集封包，流量減半。
     即使某個 client 發送失敗也不會影響其他 client。
-    同時負責偵測跌倒上升邊緣並觸發 LINE Notify 推播。
+    同時負責偵測跌倒上升邊緣並觸發 LINE 推播。
     """
     logger.info("[WS] Broadcast loop started (%.1f Hz)", 1.0 / WS_BROADCAST_INTERVAL)
     if SUPABASE_ENABLED:
@@ -1196,6 +1446,17 @@ async def broadcast_loop() -> None:
     while True:
         score_now = state.get_movement_score()
 
+        # ---- 錄製 movement score 供離線分析 (--record) ---- #
+        if RECORD_FILE is not None:
+            try:
+                RECORD_FILE.write(json.dumps({
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "score": round(score_now, 2),
+                }) + "\n")
+                RECORD_FILE.flush()
+            except Exception as exc:
+                logger.warning("[Record] 寫入失敗: %s", exc)
+
         # ---- 跌倒上升邊緣：LINE 推播 + 雲端事件 ---- #
         line_token = state.check_and_arm_line_notify()
         loc_x, loc_y = state.get_location()
@@ -1209,10 +1470,21 @@ async def broadcast_loop() -> None:
                 f"請立即確認被照護者狀況！"
             )
             # 在背景執行緒發送，不阻塞事件迴圈
-            loop.run_in_executor(None, send_line_notify, line_token, msg)
+            loop.run_in_executor(None, send_line_push, line_token, state.get_line_user_id(), msg)
             logger.info("[LINE] 跌倒警報已排入推播佇列 (score=%.1f)", score_now)
             if SUPABASE_ENABLED:
                 loop.run_in_executor(None, supabase_insert_fall_event, score_now, loc_x, loc_y)
+
+        # ---- 久未活動偵測：異常靜止 → LINE 推播 + 雲端事件 ---- #
+        inactivity_msg = inactivity_detector.update(score_now)
+        if inactivity_msg:
+            token = state.get_line_token()
+            user_id = state.get_line_user_id()
+            if token and user_id and state.get_settings().get("lineNotifyEnabled", False):
+                loop.run_in_executor(None, send_line_push, token, user_id, inactivity_msg)
+            if SUPABASE_ENABLED:
+                loop.run_in_executor(None, supabase_insert_inactivity_event, score_now)
+            logger.warning("[Inactivity] 異常靜止警報已觸發")
 
         # ---- 雲端：每分鐘活動彙整 + 裝置心跳 ---- #
         if SUPABASE_ENABLED:
@@ -1232,21 +1504,17 @@ async def broadcast_loop() -> None:
                 last_heartbeat = time.time()
                 # 順帶檢查跌倒升級通知（未確認逾時 → 再推播）
                 if _pending_falls:
-                    loop.run_in_executor(None, process_escalations, state.get_line_token())
+                    loop.run_in_executor(None, process_escalations,
+                                         state.get_line_token(), state.get_line_user_id())
 
         if connected_clients:
-            # 組裝兩種封包
             full_payload = build_broadcast_payload()
-            movement_payload = build_movement_payload()
 
-            # 同時推送給所有 clients
+            # 推送完整狀態封包給所有 clients
             stale_clients = set()
             for client in connected_clients.copy():
                 try:
-                    # 先送完整狀態封包
                     await client.send(full_payload)
-                    # 再送 movement 封包 (供 worker 的 movement 分支使用)
-                    await client.send(movement_payload)
                 except websockets.exceptions.ConnectionClosed:
                     stale_clients.add(client)
                 except Exception as exc:
@@ -1264,6 +1532,10 @@ async def start_websocket_server() -> None:
     啟動 WebSocket Server 並同時運行廣播迴圈。
     """
     logger.info("[WS] Starting WebSocket Server at ws://%s:%d", WS_HOST, WS_PORT)
+    if WS_AUTH_TOKEN:
+        logger.info("[WS] 連線驗證已啟用（需 WICARE_WS_TOKEN）")
+    else:
+        logger.warning("[WS] ⚠️ 未設定 WICARE_WS_TOKEN：任何同網段裝置皆可連線，僅建議純區網開發使用")
 
     async with serve(ws_handler, WS_HOST, WS_PORT) as server:
         logger.info("[WS] WebSocket Server ready, waiting for connections...")
@@ -1311,7 +1583,7 @@ def main() -> None:
       2. WiFi Location Thread (daemon)  -- 或模擬版
       3. WebSocket Server (async main loop)
     """
-    global SERIAL_PORT, WS_PORT, SIMULATE_MODE, BLE_MODE, BLE_ADDRESS
+    global SERIAL_PORT, WS_PORT, SIMULATE_MODE, BLE_MODE, BLE_ADDRESS, RECORD_FILE
 
     # ---- 解析命令列參數 ---- #
     args = parse_args()
@@ -1320,6 +1592,9 @@ def main() -> None:
     BLE_ADDRESS = args.ble_address
     if args.ws_port:
         WS_PORT = args.ws_port
+    if args.record:
+        RECORD_FILE = open(args.record, "a", encoding="utf-8")
+        logger.info("[Record] movement score 將寫入 %s", args.record)
 
     print("=" * 60)
     print("  Wi-Care Smart Long-term Care Monitoring System")
@@ -1401,6 +1676,11 @@ def main() -> None:
         # 等待子執行緒結束 (daemon thread 會在主程式結束時自動終止)
         serial_thread.join(timeout=2.0)
         wifi_thread.join(timeout=2.0)
+        if RECORD_FILE is not None:
+            try:
+                RECORD_FILE.close()
+            except Exception:
+                pass
         logger.info("[Main] System fully shut down.")
 
 

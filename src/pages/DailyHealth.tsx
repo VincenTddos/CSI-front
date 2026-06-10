@@ -1,12 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Clock, Save, Check, X, TriangleAlert, CheckCircle2 } from 'lucide-react';
-import { mockPatients } from '../lib/mockData';
 import { CheckupStatus, Patient } from '../types';
 import { cn } from '../lib/utils';
+import { usePatients } from '../hooks/usePatients';
 
 const DAILY_STORAGE_KEY = 'csi_daily_health';
 const CHECKUP_STORAGE_KEY = 'csi_routine_checkup';
-const PATIENTS_STORAGE_KEY = 'csi_patients';
 
 // ===== Shared types =====
 interface DailyRecord {
@@ -28,16 +27,8 @@ interface CheckupRecord {
   measureDate: string;
 }
 
-// ===== Get current patient list (syncs with admin additions) =====
-function getCurrentPatients(): Patient[] {
-  const saved = localStorage.getItem(PATIENTS_STORAGE_KEY);
-  if (saved) { try { return JSON.parse(saved); } catch { /* ignore */ } }
-  return mockPatients;
-}
-
 // ===== localStorage helpers (merge with current patient list) =====
-function loadDailyRecords(): DailyRecord[] {
-  const patients = getCurrentPatients();
+function buildDailyRecords(patients: Patient[]): DailyRecord[] {
   const saved = localStorage.getItem(DAILY_STORAGE_KEY);
   const existing: DailyRecord[] = saved ? (JSON.parse(saved) || []) : [];
 
@@ -49,8 +40,7 @@ function loadDailyRecords(): DailyRecord[] {
   });
 }
 
-function loadCheckupRecords(): CheckupRecord[] {
-  const patients = getCurrentPatients();
+function buildCheckupRecords(patients: Patient[]): CheckupRecord[] {
   const saved = localStorage.getItem(CHECKUP_STORAGE_KEY);
   const existing: CheckupRecord[] = saved ? (JSON.parse(saved) || []) : [];
 
@@ -65,7 +55,9 @@ function loadCheckupRecords(): CheckupRecord[] {
 //  每日健康 (血壓、血氧)
 // =============================================
 export function DailyHealth() {
-  const [records, setRecords] = useState<DailyRecord[]>(loadDailyRecords);
+  const { patients } = usePatients();
+  const [records, setRecords] = useState<DailyRecord[]>([]);
+  useEffect(() => { setRecords(buildDailyRecords(patients)); }, [patients]);
   const [showSavedMsg, setShowSavedMsg] = useState(false);
 
   const handleInputChange = (id: string, field: string, value: string) => {
@@ -178,7 +170,9 @@ export function DailyHealth() {
 //  日常檢查 (體重、血糖、尿液、糞便)
 // =============================================
 export function RoutineCheckup() {
-  const [records, setRecords] = useState<CheckupRecord[]>(loadCheckupRecords);
+  const { patients } = usePatients();
+  const [records, setRecords] = useState<CheckupRecord[]>([]);
+  useEffect(() => { setRecords(buildCheckupRecords(patients)); }, [patients]);
   const [showSavedMsg, setShowSavedMsg] = useState(false);
 
   const handleInputChange = (id: string, field: string, value: string | CheckupStatus) => {

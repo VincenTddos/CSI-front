@@ -1,0 +1,10 @@
+# Wi-Care core_bridge.py / csi_pipeline.py 後端依賴
+# 安裝：python -m pip install -r requirements.txt
+numpy>=2.0
+scipy>=1.13
+matplotlib>=3.8
+pyserial>=3.5
+websockets>=13.0
+
+# BLE 模式 (--ble) 才需要，預設 simulate / serial 模式可不裝：
+# bleak>=0.22

@@ -1,28 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Search, ChevronRight, Phone, X, Plus, ArrowLeft, Pencil, Save } from 'lucide-react';
-import { Page, Patient } from '../types';
-import { mockPatients } from '../lib/mockData';
+import { useNavigate } from 'react-router-dom';
+import { Patient } from '../types';
+import { isSupabaseConfigured } from '../lib/supabase';
+import { updateResident } from '../services/residentsService';
+import { usePatients } from '../hooks/usePatients';
 
 const STORAGE_KEY = 'csi_patients';
-
-function loadPatients(): Patient[] {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    try { return JSON.parse(saved); } catch { /* ignore */ }
-  }
-  return mockPatients;
-}
 
 function savePatients(patients: Patient[]) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(patients));
 }
 
-import { useNavigate } from 'react-router-dom';
+// Patient(編輯後) → residents 資料列 patch（房號不回寫，避免覆蓋 room_id）
+function patientToResidentPatch(p: Patient) {
+  return {
+    name: p.name,
+    gender: p.gender,
+    birth_date: p.birthDate ? p.birthDate.replace(/\//g, '-') : null,
+    contact_name: p.contactName,
+    contact_phone: p.contactPhone,
+    medications: p.medications,
+    medical_history: p.medicalHistory,
+    notes: p.notes,
+  };
+}
 
 export function CareRecipients() {
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [isEditing, setIsEditing] = useState(false);
-  const [patients, setPatients] = useState<Patient[]>(loadPatients);
+  const { patients, setPatients, loading, error, reload } = usePatients();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -30,11 +37,6 @@ export function CareRecipients() {
   const [editData, setEditData] = useState<Patient | null>(null);
   const [newMedication, setNewMedication] = useState('');
   const [showSavedMsg, setShowSavedMsg] = useState(false);
-
-  // Persist patients whenever they change
-  useEffect(() => {
-    savePatients(patients);
-  }, [patients]);
 
   const handleSelectPatient = (patient: Patient) => {
     // always get latest from state
@@ -44,15 +46,23 @@ export function CareRecipients() {
     setIsEditing(false);
   };
 
-  const handleSave = () => {
-    if (editData) {
-      const updated = patients.map(p => p.id === editData.id ? editData : p);
-      setPatients(updated);
-      setSelectedPatient(editData);
-      setIsEditing(false);
-      setShowSavedMsg(true);
-      setTimeout(() => setShowSavedMsg(false), 2500);
+  const handleSave = async () => {
+    if (!editData) return;
+    const updated = patients.map(p => p.id === editData.id ? editData : p);
+    setPatients(updated);
+    setSelectedPatient(editData);
+    setIsEditing(false);
+    try {
+      if (isSupabaseConfigured) {
+        await updateResident(editData.id, patientToResidentPatch(editData));
+      } else {
+        savePatients(updated);
+      }
+    } catch {
+      // 寫入失敗仍保留本機編輯（離線可用），UI 不中斷
     }
+    setShowSavedMsg(true);
+    setTimeout(() => setShowSavedMsg(false), 2500);
   };
 
   const cancelEdit = () => {
@@ -362,7 +372,15 @@ export function CareRecipients() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {filteredPatients.map((patient) => (
+              {loading && (
+                <tr><td colSpan={6} className="p-8 text-center text-slate-400 text-sm">載入中…</td></tr>
+              )}
+              {!loading && error && (
+                <tr><td colSpan={6} className="p-8 text-center text-red-500 text-sm">
+                  {error} <button onClick={reload} className="underline ml-1">重試</button>
+                </td></tr>
+              )}
+              {!loading && !error && filteredPatients.map((patient) => (
                 <tr
                   key={patient.id}
                   className="hover:bg-blue-50/30 transition-colors cursor-pointer group"
@@ -389,10 +407,10 @@ export function CareRecipients() {
                   </td>
                 </tr>
               ))}
-              {filteredPatients.length === 0 && (
+              {!loading && !error && filteredPatients.length === 0 && (
                 <tr>
                   <td colSpan={6} className="p-8 text-center text-slate-400 text-sm">
-                    找不到符合的受護者
+                    {patients.length === 0 ? '尚無住民資料' : '找不到符合的受護者'}
                   </td>
                 </tr>
               )}

@@ -12,6 +12,7 @@ export { FamilyHealthLog } from './FamilyHealthLog';
 export { DeviceManagement } from './DeviceManagement';
 export { SubcarrierAnalyzer } from './SubcarrierAnalyzer';
 export { RoomOccupancy } from './RoomOccupancy';
+export { MonitorOverview } from './MonitorOverview';
 export { Analytics } from './Analytics';
 export { Landing } from './Landing';
 export { CareInsights } from './CareInsights';

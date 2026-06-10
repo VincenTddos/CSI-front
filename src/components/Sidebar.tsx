@@ -21,6 +21,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { initialsAvatar } from '../lib/avatar';
 import { useUser } from '../contexts/UserContext';
 import { UserRole } from '../types';
 import { canSeeAll } from '../lib/roles';
@@ -48,6 +49,7 @@ export function Sidebar() {
     { id: 'health-log', label: '健康日誌', icon: BookHeart, roles: ['family'] },
     { id: 'device', label: '區域管理', icon: MonitorSmartphone, roles: ['admin', 'medical', 'family'] },
     { id: 'occupancy', label: '房間佔用', icon: LayoutGrid, roles: ['admin', 'medical'] },
+    { id: 'overview', label: '機構總覽', icon: Building2, roles: ['admin', 'medical'] },
     { id: 'subcarrier', label: '子載波分析', icon: Radio, roles: ['admin'] },
     { id: 'daily-health', label: '每日健康', icon: HeartPulse, roles: ['admin', 'medical'] },
     { id: 'routine-checkup', label: '日常檢查', icon: ClipboardList, roles: ['admin', 'medical'] },
@@ -72,7 +74,7 @@ export function Sidebar() {
       <div className="p-6 border-b border-slate-700/50 flex flex-col items-center">
         <div className="w-20 h-20 rounded-full bg-slate-600 mb-4 overflow-hidden border-2 border-slate-500">
           <img
-            src={user?.avatar || "https://picsum.photos/seed/avatar1/150/150"}
+            src={user?.avatar || initialsAvatar(user?.name || '使用者')}
             alt="User Avatar"
             className="w-full h-full object-cover"
             referrerPolicy="no-referrer"

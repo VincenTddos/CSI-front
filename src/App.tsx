@@ -16,6 +16,7 @@ import {
   FamilyHealthLog,
   SubcarrierAnalyzer,
   RoomOccupancy,
+  MonitorOverview,
   Analytics,
   Landing,
   CareInsights,
@@ -72,6 +73,7 @@ function AppRoutes() {
           <Route path="health-log" element={<FamilyHealthLog />} />
           <Route path="subcarrier" element={<SubcarrierAnalyzer />} />
           <Route path="occupancy" element={<RoomOccupancy />} />
+          <Route path="overview" element={<MonitorOverview />} />
         </Route>
       ) : null}
 

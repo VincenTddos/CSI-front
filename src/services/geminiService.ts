@@ -5,14 +5,32 @@
 // =============================================================================
 
 export async function askGemini(prompt: string): Promise<string> {
-  const response = await fetch('/api/ai-analysis', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
-  });
-  const result = await response.json();
+  let response: Response;
+  try {
+    response = await fetch('/api/ai-analysis', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+  } catch {
+    // 網路層失敗（離線、CORS、伺服器未啟動）
+    throw new Error('AI 服務暫時無法使用，請稍後再試');
+  }
+
+  // 後端在 504/500 等情況可能回傳 HTML 而非 JSON，直接 .json() 會 throw。
+  // 先讀文字再嘗試解析，避免把解析錯誤暴露給使用者。
+  const rawText = await response.text();
+  let result: { text?: string; error?: string } = {};
+  try {
+    result = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    if (!response.ok) {
+      throw new Error(`AI 服務暫時無法使用 (${response.status})`);
+    }
+  }
+
   if (!response.ok) {
-    throw new Error(result.error || `AI 服務回應失敗 (${response.status})`);
+    throw new Error(result.error || `AI 服務暫時無法使用 (${response.status})`);
   }
   return result.text || '（AI 無回應）';
 }
