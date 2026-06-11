@@ -12,6 +12,7 @@ import { Reveal } from '../components/landing/Reveal';
 import { LiveSignal } from '../components/landing/LiveSignal';
 import { ActivityDemo } from '../components/landing/ActivityDemo';
 import { ZoneMap } from '../components/landing/ZoneMap';
+import { EscalationDemo } from '../components/landing/EscalationDemo';
 
 export function Landing() {
   const navigate = useNavigate();
@@ -142,33 +143,64 @@ export function Landing() {
       <section className="max-w-6xl mx-auto px-6 py-20">
         <Reveal className="text-center mb-12">
           <h2 className="text-3xl font-bold text-slate-900">系統如何運作</h2>
-          <p className="text-slate-500 mt-3">即時演示：從感測訊號、活動辨識到分區掌握</p>
+          <p className="text-slate-500 mt-3">即時演示：從感測訊號、活動辨識、分區掌握到警報通報</p>
         </Reveal>
-        <div className="grid lg:grid-cols-2 gap-8 items-center mb-8">
-          <Reveal><LiveSignal /></Reveal>
-          <Reveal delay={120}>
-            <div>
-              <h3 className="text-xl font-bold text-slate-900">① 感測：Wi-Fi 訊號變化</h3>
-              <p className="text-slate-600 mt-3 leading-relaxed">
-                ESP32 感測器持續擷取 Wi-Fi 子載波。人體一移動，訊號隨即抖動，系統將其量化為
-                0–100 的移動分數，作為後續判斷依據。無需鏡頭、可穿牆、不受光線影響。
-              </p>
-            </div>
-          </Reveal>
-        </div>
-        <div className="grid md:grid-cols-2 gap-8">
-          <Reveal>
-            <div className="flex flex-col gap-4">
-              <ActivityDemo />
-              <p className="text-sm text-slate-500 text-center px-4">② 辨識：6 級活動分類，分數異常飆高即判定跌倒風險。</p>
-            </div>
-          </Reveal>
-          <Reveal delay={120}>
-            <div className="flex flex-col gap-4">
-              <ZoneMap />
-              <p className="text-sm text-slate-500 text-center px-4">③ 分區：多台感測器分顧各房間，掌握長者活動範圍。</p>
-            </div>
-          </Reveal>
+        <div className="space-y-16 lg:space-y-24">
+          {/* ① 感測 —— 演示在左 */}
+          <div className="grid lg:grid-cols-2 gap-8 lg:gap-14 items-center">
+            <Reveal><LiveSignal /></Reveal>
+            <Reveal delay={120}>
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">① 感測：Wi-Fi 訊號變化</h3>
+                <p className="text-slate-600 mt-3 leading-relaxed">
+                  ESP32 感測器持續擷取 Wi-Fi 子載波。人體一移動，訊號隨即抖動，系統將其量化為
+                  0–100 的移動分數，作為後續判斷依據。無需鏡頭、可穿牆、不受光線影響。
+                </p>
+              </div>
+            </Reveal>
+          </div>
+
+          {/* ② 辨識 —— 演示在右 */}
+          <div className="grid lg:grid-cols-2 gap-8 lg:gap-14 items-center">
+            <Reveal className="lg:order-2"><ActivityDemo /></Reveal>
+            <Reveal delay={120} className="lg:order-1">
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">② 辨識：六級活動分類</h3>
+                <p className="text-slate-600 mt-3 leading-relaxed">
+                  移動分數會對應到睡眠、靜坐、行走到激烈活動等六個等級。一旦分數在短時間內異常飆高，
+                  系統即判定為跌倒風險，立即觸發後續通報流程。
+                </p>
+              </div>
+            </Reveal>
+          </div>
+
+          {/* ③ 分區 —— 演示在左 */}
+          <div className="grid lg:grid-cols-2 gap-8 lg:gap-14 items-center">
+            <Reveal><ZoneMap /></Reveal>
+            <Reveal delay={120}>
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">③ 分區：多裝置分區偵測</h3>
+                <p className="text-slate-600 mt-3 leading-relaxed">
+                  在客廳、臥室、浴室分別佈署感測器，每台各顧一區。系統即時呈現長者所在房間，
+                  掌握日常動線，連異常久未活動也能及早察覺。
+                </p>
+              </div>
+            </Reveal>
+          </div>
+
+          {/* ④ 通報 —— 演示在右 */}
+          <div className="grid lg:grid-cols-2 gap-8 lg:gap-14 items-center">
+            <Reveal className="lg:order-2"><EscalationDemo /></Reveal>
+            <Reveal delay={120} className="lg:order-1">
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">④ 通報：警報自動升級</h3>
+                <p className="text-slate-600 mt-3 leading-relaxed">
+                  偵測到跌倒後，系統立即推播護理站。若 30 秒內無人確認，警報自動升級轉通知家屬，
+                  層層接力直到有人回應，確保緊急狀況不漏接、不延誤。
+                </p>
+              </div>
+            </Reveal>
+          </div>
         </div>
       </section>
 

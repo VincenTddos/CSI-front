@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Page } from '../types';
-import { Activity, ArrowLeft, Building2, HeartPulse, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
+import { Activity, ArrowLeft, Building2, HeartPulse, ShieldCheck, AlertCircle, CheckCircle, Eye, EyeOff } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { GoogleLoginButton } from '../components/GoogleLoginButton';
 
@@ -14,6 +14,7 @@ export function Register() {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [unitCode, setUnitCode] = useState('');
   const [familyCode, setFamilyCode] = useState('');
+  const [approvalCode, setApprovalCode] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState('');
@@ -55,6 +56,10 @@ export function Register() {
       setError('請輸入病患專屬家屬代碼');
       return false;
     }
+    if (role === 'admin' && !approvalCode.trim()) {
+      setError('請輸入管理者審核碼');
+      return false;
+    }
     return true;
   };
 
@@ -78,6 +83,7 @@ export function Register() {
         role: role as any,
         unitCode: role === 'medical' ? unitCode : undefined,
         familyCode: role === 'family' ? familyCode : undefined,
+        approvalCode: role === 'admin' ? approvalCode : undefined,
       });
 
       if (result.success) {
@@ -128,10 +134,11 @@ export function Register() {
         <form className="space-y-5" onSubmit={handleSubmit}>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">使用者身份</label>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-3 gap-3">
               {[
                 { id: 'medical', label: '醫護', icon: HeartPulse },
                 { id: 'family', label: '家屬', icon: Building2 },
+                { id: 'admin', label: '管理者', icon: ShieldCheck },
               ].map((r) => (
                 <button
                   key={r.id}
@@ -200,6 +207,21 @@ export function Register() {
                 placeholder="請輸入病患專屬家屬代碼"
                 className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-[#007AFF]/20 focus:border-[#007AFF] transition-all outline-none text-slate-700 disabled:opacity-60"
               />
+            </div>
+          )}
+
+          {role === 'admin' && (
+            <div className="animate-in fade-in slide-in-from-top-2 duration-300">
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">管理者審核碼 <span className="text-red-500">*</span></label>
+              <input
+                type="text"
+                value={approvalCode}
+                onChange={(e) => setApprovalCode(e.target.value)}
+                disabled={loading}
+                placeholder="請輸入管理者審核碼"
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:ring-2 focus:ring-[#007AFF]/20 focus:border-[#007AFF] transition-all outline-none text-slate-700 disabled:opacity-60"
+              />
+              <p className="mt-1.5 text-xs text-slate-400">管理者帳號需經審核，請向系統開發者索取審核碼。</p>
             </div>
           )}
 

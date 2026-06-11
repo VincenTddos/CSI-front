@@ -9,6 +9,15 @@ import { UserRole } from '../types';
 export const DEVELOPER_EMAILS = ['vincent6244@gmail.com'];
 export const DEVELOPER_USERNAMES = ['developer'];
 
+// 管理者審核碼 —— 註冊「管理者」時需填入此碼才能通過審核（輕量審核機制）。
+// 由開發者私下發給可信任的管理人員即可，避免任何人都能自行升級為管理者。
+export const ADMIN_APPROVAL_CODE = 'WICARE-ADMIN-2025';
+
+/** 驗證管理者審核碼是否正確（大小寫、前後空白不敏感） */
+export function isValidAdminApprovalCode(code?: string | null): boolean {
+  return (code ?? '').trim().toLowerCase() === ADMIN_APPROVAL_CODE.toLowerCase();
+}
+
 /** 依 Google 信箱或登入帳號判斷是否為開發者 */
 export function isDeveloperIdentity(email?: string | null, username?: string | null): boolean {
   const e = (email ?? '').trim().toLowerCase();

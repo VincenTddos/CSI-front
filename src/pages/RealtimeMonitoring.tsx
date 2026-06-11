@@ -33,6 +33,7 @@ import { cn } from '../lib/utils';
 import { RoomGrid, RoomStatus } from '../components/RoomGrid';
 import { RoomDetailPanel } from '../components/RoomDetailPanel';
 import { usePatients } from '../hooks/usePatients';
+import { askGemini } from '../services/geminiService';
 
 // Simulate CSI waveform data (used when NOT connected to real hardware)
 const generateData = (time: number, isFall: boolean, sensitivity: number = 0.5) => {
@@ -96,7 +97,7 @@ export function RealtimeMonitoring() {
   const [rightTab, setRightTab] = useState<'floorplan' | 'rooms'>('floorplan');
   const [selectedRoom, setSelectedRoom] = useState<RoomStatus | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
-  const { isDeveloperMode, manualState, sensitivity, sceneMode } = useDeveloper();
+  const { isDeveloperMode, manualState, sensitivity } = useDeveloper();
 
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
   const { isConnected, dataStale, bridgeStatus, locationData } = useCSIWebSocket();
@@ -151,44 +152,53 @@ export function RealtimeMonitoring() {
     setIsThinking(true);
     setThinkingResult(null);
 
+    // 取此刻的即時數據快照（只用真的有的資料：移動分數、活動分類、跌倒狀態）
+    const recent = scoreHistoryRef.current;
+    const avgScore = recent.length
+      ? Math.round(recent.reduce((a, b) => a + b, 0) / recent.length)
+      : movementScore;
+    const peakScore = recent.length ? Math.round(Math.max(...recent)) : movementScore;
+    const dataSource = isHardwareOnline ? '實機 ESP32 即時數據'
+      : (isDeveloperMode && manualState) ? '開發者手動測試'
+      : isSimulating ? '模擬數據'
+      : '無即時數據';
+
     if (isDeveloperMode) {
       // Simulate network delay
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      const mockResult = isFallDetected 
-        ? `【開發者模式 - 模擬分析】\n偵測到「${sceneMode === 'bathroom' ? '浴室' : '客廳'}」區域有劇烈訊號擾動，特徵與跌倒高度吻合。當前靈敏度設定為 ${Math.round(sensitivity * 100)}%。建議立即派員前往查看。`
-        : `【開發者模式 - 模擬分析】\n當前環境訊號穩定。場景模式：${sceneMode === 'bathroom' ? '浴室' : '客廳'}。偵測到微弱的呼吸起伏，長者目前處於靜止狀態。`;
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      const mockResult = isFallDetected
+        ? `【開發者模式 · 模擬研判】\n「${selectedArea}」訊號在短時間內劇烈震盪，與跌倒特徵高度吻合。\n風險等級：高。\n建議：立即派員前往查看，並確認長者意識與傷勢。`
+        : `【開發者模式 · 模擬研判】\n「${selectedArea}」目前訊號平穩，長者處於正常活動狀態。\n風險等級：低。\n建議：維持例行觀察即可，暫無須介入。`;
       setThinkingResult(mockResult);
       setIsThinking(false);
       return;
     }
 
+    // 沒有任何即時數據時，不丟給 AI 編造
+    if (dataSource === '無即時數據') {
+      setThinkingResult('目前沒有可分析的即時數據。請確認 ESP32 已連線，或開啟模擬模式後再試。');
+      setIsThinking(false);
+      return;
+    }
+
     const prompt = `
-你是一位專業的智慧長照 AI 分析師。
-目前監控區域：${selectedArea}
-場景模式：${sceneMode === 'bathroom' ? '浴室' : '客廳'}
-偵測靈敏度：${Math.round(sensitivity * 100)}%
-當前偵測狀態：${isFallDetected ? '偵測到跌倒風險' : '正常活動中'}
+你是一位智慧長照的即時監測 AI。請僅根據以下「此刻」的即時數據，對長者當前狀態做出簡短研判與建議。
+重要：你只有移動分數與活動分類，沒有影像、生命徵象或病史。請勿臆測呼吸、心率或下醫療診斷，只就「活動狀態」研判。
 
-請針對當前的 Wi-Fi CSI 訊號模式進行深度分析。
-如果偵測到跌倒，請分析可能的嚴重程度與應對建議。
-如果狀態正常，請分析環境中的微小變動（如呼吸頻率、睡眠品質等）。
+監控區域：${selectedArea}
+資料來源：${dataSource}
+目前活動分類：${harActivity.label}（信心 ${harActivity.confidence}%）
+即時移動分數：${movementScore} / 100（近 2 秒平均 ${avgScore}、峰值 ${peakScore}）
+跌倒偵測：${isFallDetected ? '是（偵測到跌倒風險）' : '否'}${locationData?.x != null ? `\n相對位置：x=${locationData.x}, y=${locationData.y}` : ''}
 
-請使用繁體中文回答，條列式輸出。
-    `.trim();
+請用繁體中文，條列輸出三點：
+1. 目前狀態研判（依移動分數與活動分類，一句話）
+2. 風險等級（低 / 中 / 高）與簡短理由
+3. 給照護人員的當下建議（具體、可立即執行）
+`.trim();
 
     try {
-      const response = await fetch('/api/ai-analysis', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
-      });
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || `API 回應失敗 (${response.status})`);
-      }
-
-      setThinkingResult(result.text || "無法取得分析結果。");
+      setThinkingResult(await askGemini(prompt));
     } catch (err: unknown) {
       const errMsg = err instanceof Error ? err.message : String(err);
       setThinkingResult(`分析過程中發生錯誤：\n${errMsg}`);
@@ -613,7 +623,7 @@ export function RealtimeMonitoring() {
                 ) : (
                   <BrainCircuit className="w-4 h-4 text-[#007AFF]" />
                 )}
-                <span className="text-sm font-bold">啟動 AI 深度分析 (Thinking Mode)</span>
+                <span className="text-sm font-bold">即時 AI 研判</span>
               </button>
             </div>
           </div>
@@ -688,7 +698,7 @@ export function RealtimeMonitoring() {
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-bold flex items-center gap-2">
                   <BrainCircuit className="w-5 h-5 text-[#007AFF]" />
-                  AI 深度分析報告
+                  即時 AI 研判
                 </h3>
                 <button 
                   onClick={() => setThinkingResult(null)}

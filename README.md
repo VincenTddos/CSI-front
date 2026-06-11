@@ -140,7 +140,7 @@ python core_bridge.py --simulate
 python core_bridge.py --ble
 
 # Serial 模式（USB）
-python core_bridge.py --port COM7
+python core_bridge.py --port COM5
 ```
 
 **5. 啟動前端**

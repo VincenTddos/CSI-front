@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
-import { isDeveloperIdentity } from '../lib/roles';
+import { isDeveloperIdentity, isValidAdminApprovalCode } from '../lib/roles';
 import { initialsAvatar } from '../lib/avatar';
 
 export interface RegisterData {
@@ -11,6 +11,7 @@ export interface RegisterData {
   role: UserRole;
   unitCode?: string; // For medical staff
   familyCode?: string; // For family members
+  approvalCode?: string; // For admin self-registration (輕量審核碼)
 }
 
 interface StoredUser extends RegisterData {
@@ -184,11 +185,15 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
   // ===========================================================================
   const register = async (data: RegisterData): Promise<AuthResult> => {
     if (data.password.length < 6) return { success: false, message: '密碼至少需要 6 個字符' };
-    if (data.role !== 'medical' && data.role !== 'family') {
-      return { success: false, message: '註冊角色僅限醫護人員或家屬' };
+    if (data.role !== 'medical' && data.role !== 'family' && data.role !== 'admin') {
+      return { success: false, message: '註冊角色僅限醫護人員、家屬或管理者' };
     }
     if (data.role === 'medical' && !data.unitCode) return { success: false, message: '醫護人員必須填寫單位代號' };
     if (data.role === 'family' && !data.familyCode) return { success: false, message: '家屬必須填寫家屬代碼' };
+    // 管理者：輕量審核 —— 須持有正確審核碼才能註冊為管理者
+    if (data.role === 'admin' && !isValidAdminApprovalCode(data.approvalCode)) {
+      return { success: false, message: '管理者審核碼不正確，請向系統開發者索取' };
+    }
 
     if (isSupabaseConfigured) {
       const { error } = await supabase.auth.signUp({
@@ -203,10 +208,11 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       return { success: true, message: '註冊成功，請使用帳號登入' };
     }
 
-    // -- fallback：localStorage --
+    // -- fallback：localStorage（不保存審核碼）--
     const allUsers = getStoredUsers();
     if (allUsers.some(u => u.username === data.username)) return { success: false, message: '帳號已被註冊' };
-    allUsers.push({ ...data, password: await hashPassword(data.password), id: Math.random().toString(36).substr(2, 9) });
+    const { approvalCode: _approvalCode, ...stored } = data;
+    allUsers.push({ ...stored, password: await hashPassword(data.password), id: Math.random().toString(36).substr(2, 9) });
     saveStoredUsers(allUsers);
     return { success: true, message: '註冊成功，請使用帳號登入' };
   };
