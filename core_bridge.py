@@ -54,6 +54,10 @@ try:
     from bleak import BleakScanner, BleakClient
     BLEAK_AVAILABLE = True
 except ImportError:
+    # 未安裝 bleak 時仍綁定名稱，避免型別檢查器誤判「可能未繫結」；
+    # 實際使用前 main() 會檢查 BLEAK_AVAILABLE。
+    BleakScanner = None  # type: ignore[assignment,misc]
+    BleakClient = None   # type: ignore[assignment,misc]
     BLEAK_AVAILABLE = False
 
 try:
@@ -773,7 +777,7 @@ def classify_activity_level(avg_score: float) -> str:
         return "靜坐"
     if avg_score < 35:
         return "輕微活動"
-    if avg_score < 65:
+    if avg_score < 85:
         return "行走"
     return "激烈活動"
 
@@ -991,6 +995,9 @@ def serial_reader_thread() -> None:
 
 async def _ble_reader_async() -> None:
     """BLE 模式的非同步主迴圈，掃描並連接 ESPectre 裝置後持續接收 telemetry"""
+    # 只有 BLEAK_AVAILABLE 時 main() 才會走到 BLE 模式；於此聲明不變式，
+    # 讓型別檢查器在本函式內把 BleakScanner/BleakClient 收窄為非 None。
+    assert BleakScanner is not None and BleakClient is not None
     import struct
     movement_window = deque(maxlen=200)
     last_threshold_command: Optional[str] = None
@@ -1007,11 +1014,10 @@ async def _ble_reader_async() -> None:
             settings = state.get_settings()
 
             if settings.get("smoothingEnabled", True):
-                if smoothed_movement is None:
-                    smoothed_movement = raw_movement
-                else:
-                    smoothed_movement = 0.7 * smoothed_movement + 0.3 * raw_movement
-                movement = smoothed_movement
+                # 局部 prev 讓型別收窄成 float（nonlocal Optional 跨閉包無法被推斷收窄）
+                prev = smoothed_movement
+                movement = raw_movement if prev is None else 0.7 * prev + 0.3 * raw_movement
+                smoothed_movement = movement
             else:
                 movement = raw_movement
 

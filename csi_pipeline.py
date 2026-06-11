@@ -47,7 +47,8 @@ def hampel_filter(x: np.ndarray, window: int = 7, n_sigma: float = 3.0) -> np.nd
 def butterworth_lowpass(x: np.ndarray, cutoff_hz: float = 3.0,
                         fs: float = FS, order: int = 4) -> np.ndarray:
     nyq = fs / 2.0
-    b, a = sp_signal.butter(order, cutoff_hz / nyq, btype="low")
+    # scipy 型別存根對 butter 回傳值定義過寬（重載未依 output 區分）；預設 output='ba' 即 (b, a)
+    b, a = sp_signal.butter(order, cutoff_hz / nyq, btype="low")  # type: ignore[misc]
     return sp_signal.filtfilt(b, a, x)  # filtfilt: 零相位，不造成時間偏移
 
 
