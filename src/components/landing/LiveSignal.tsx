@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 
 /**
- * LiveSignal — 用 canvas 即時繪製多子載波 CSI 波形（持續流動，偶發動作尖峰）。
+ * LiveSignal — 用 canvas 繪製 CSI 感測「示意」波形（持續流動，偶發動作尖峰）。
+ * 注意：這是介紹頁的示意動畫，非實機資料；實際系統輸出的是單一移動強度分數。
  */
 export function LiveSignal() {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -16,10 +17,9 @@ export function LiveSignal() {
     let raf = 0, t = 0;
     let spike = 0; // 動作尖峰強度
 
+    // 單一移動訊號波形（對應實際系統輸出的單一移動強度分數，而非多條子載波）
     const waves = [
-      { color: '#007AFF', freq: 0.035, amp: 16, speed: 0.06, phase: 0 },
-      { color: '#a855f7', freq: 0.05, amp: 11, speed: 0.09, phase: 1.5 },
-      { color: '#22c55e', freq: 0.07, amp: 8, speed: 0.13, phase: 3 },
+      { color: '#007AFF', freq: 0.04, amp: 22, speed: 0.07, phase: 0 },
     ];
 
     const draw = () => {
@@ -64,17 +64,16 @@ export function LiveSignal() {
     <div className="relative rounded-2xl border border-slate-200 bg-white p-4 shadow-xl">
       <div className="flex items-center justify-between mb-2">
         <span className="text-xs font-bold text-slate-500 flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> CSI 子載波即時訊號
+          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" /> CSI 感測即時波形（示意）
         </span>
         <span className="text-xs font-mono text-slate-400">
           移動分數 <span className={`font-bold ${score > 60 ? 'text-red-500' : score > 25 ? 'text-amber-500' : 'text-green-500'}`}>{score}</span>
         </span>
       </div>
       <canvas ref={ref} width={520} height={180} className="w-full rounded-lg bg-[#F8FAFC]" />
-      <div className="flex gap-4 mt-2 text-[10px] text-slate-400">
-        <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#007AFF]" /> 子載波 1</span>
-        <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-purple-500" /> 子載波 2</span>
-        <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-green-500" /> 子載波 3</span>
+      <div className="flex gap-3 mt-2 text-[10px] text-slate-400">
+        <span className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#007AFF]" /> 示意波形</span>
+        <span className="text-slate-400/80">實際偵測以移動強度分數為準</span>
       </div>
     </div>
   );
