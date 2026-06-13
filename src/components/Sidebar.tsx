@@ -36,7 +36,7 @@ const ROLES: { id: UserRole; label: string; icon: React.ElementType; color: stri
 ];
 
 export function Sidebar() {
-  const { user, logout } = useUser();
+  const { user, logout, isDeveloper, viewAsRole, setViewAsRole } = useUser();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -94,6 +94,39 @@ export function Sidebar() {
             {currentRole?.label ?? user?.role}
           </span>
         </div>
+
+        {/* 開發者專用：以其他角色檢視介面（僅影響畫面顯示，不改變真實權限） */}
+        {isDeveloper && (
+          <div className="mt-3 w-full">
+            <label
+              htmlFor="dev-role-view"
+              className="flex items-center justify-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-purple-300 mb-1.5"
+            >
+              <Crown className="w-3 h-3" /> 開發者：檢視身分
+            </label>
+            <select
+              id="dev-role-view"
+              value={user?.role ?? 'developer'}
+              onChange={(e) => {
+                const next = e.target.value as UserRole;
+                setViewAsRole(next === 'developer' ? null : next);
+                navigate('/realtime'); // 切換後導向各角色皆可見的頁面，避免停留在被隱藏的頁面
+              }}
+              className="w-full bg-[#1E252B] border border-slate-600/60 text-slate-200 text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500/40 cursor-pointer"
+            >
+              {ROLES.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label}{r.id === 'developer' ? '（我自己）' : ''}
+                </option>
+              ))}
+            </select>
+            {viewAsRole && (
+              <p className="text-[10px] text-amber-300/80 mt-1.5 text-center leading-snug">
+                預覽中：僅變更畫面顯示，後端權限不受影響
+              </p>
+            )}
+          </div>
+        )}
 
         {/* 登出按鈕 */}
         <button

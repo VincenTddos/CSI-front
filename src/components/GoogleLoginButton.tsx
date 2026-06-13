@@ -10,13 +10,18 @@ interface Props {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const gis = () => (window as any).google as any;
 
+// Google OAuth Client ID 屬於公開資訊（會出現在前端 bundle），可安全寫入原始碼。
+// 部署時若 .env 未提供 VITE_GOOGLE_CLIENT_ID（例如 Netlify 未設環境變數），即用此預設值。
+const DEFAULT_GOOGLE_CLIENT_ID =
+  '353566898353-sk0gqsfnsinu3mojt0hh41se8khs50pt.apps.googleusercontent.com';
+
 export function GoogleLoginButton({ onSuccess }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const initializedRef = useRef(false);
 
   const { loginWithGoogle } = useUser();
   const navigate = useNavigate();
-  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID || DEFAULT_GOOGLE_CLIENT_ID;
 
   const [isReady, setIsReady] = useState(false);
   const [error, setError] = useState('');

@@ -35,50 +35,81 @@ import { RoomDetailPanel } from '../components/RoomDetailPanel';
 import { usePatients } from '../hooks/usePatients';
 import { askGemini } from '../services/geminiService';
 
-// Simulate CSI waveform data (used when NOT connected to real hardware)
-const generateData = (time: number, isFall: boolean, sensitivity: number = 0.5) => {
-  const base = Math.sin(time / 10) * 20;
-  const noiseFactor = sensitivity * 20;
-  const noise1 = (Math.random() * noiseFactor) - (noiseFactor / 2);
-  const noise2 = Math.cos(time / 5) * 15;
-  const noise3 = Math.sin(time / 3) * 10;
+type WaveformPoint = {
+  time: number;
+  subcarrier1: number;
+  subcarrier2: number;
+  subcarrier3: number;
+};
 
-  if (isFall) {
-    return {
-      time,
-      subcarrier1: -80 + Math.random() * 20,
-      subcarrier2: -90 + Math.random() * 15,
-      subcarrier3: -75 + Math.random() * 25,
-    };
-  }
+const generateFallWaveform = (time: number): WaveformPoint => {
+  const impact = Math.sin(time * 1.7) * 78 + (Math.random() - 0.5) * 34;
+  const rebound = Math.cos(time * 2.1) * 68 + (Math.random() - 0.5) * 28;
 
   return {
     time,
-    subcarrier1: base + noise1 + 50,
-    subcarrier2: base + noise2 + 40,
-    subcarrier3: noise3 + 60,
+    subcarrier1: Math.max(-100, Math.min(100, impact)),
+    subcarrier2: Math.max(-100, Math.min(100, -impact * 0.8 + (Math.random() - 0.5) * 24)),
+    subcarrier3: Math.max(-100, Math.min(100, rebound)),
+  };
+};
+
+// Simulate CSI waveform data (used when NOT connected to real hardware)
+const generateData = (time: number, isFall: boolean, sensitivity: number = 0.5) => {
+  if (isFall) {
+    return generateFallWaveform(time);
+  }
+
+  const base = Math.sin(time / 10) * (6 + sensitivity * 8);
+  const noiseFactor = 4 + sensitivity * 10;
+  const noise1 = (Math.random() * noiseFactor) - (noiseFactor / 2);
+  const noise2 = Math.cos(time / 5) * (5 + sensitivity * 7);
+  const noise3 = Math.sin(time / 3) * (4 + sensitivity * 6);
+
+  return {
+    time,
+    subcarrier1: base + noise1,
+    subcarrier2: base * 0.7 + noise2,
+    subcarrier3: noise3 + noise1 * 0.4,
   };
 };
 
 // Generate waveform data driven by real movement score from ESP32
 const generateRealData = (time: number, score: number, isFall: boolean) => {
   if (isFall) {
-    return {
-      time,
-      subcarrier1: -80 + Math.random() * 20,
-      subcarrier2: -90 + Math.random() * 15,
-      subcarrier3: -75 + Math.random() * 25,
-    };
+    return generateFallWaveform(time);
   }
   const norm = Math.min(score, 100) / 100;
-  const center = norm * 60 - 10;
-  const spread = 4 + norm * 30;
+  const center = Math.sin(time / 12) * norm * 12;
+  const spread = 3 + norm * 34;
   return {
     time,
     subcarrier1: center + (Math.random() - 0.5) * spread * 2,
     subcarrier2: center * 0.85 + (Math.random() - 0.5) * spread * 1.6,
     subcarrier3: center * 0.7 + (Math.random() - 0.5) * spread * 1.2,
   };
+};
+
+const clampScore = (score: number) => Math.min(100, Math.max(0, Math.round(score)));
+
+const generateSimulatedMovementScore = (
+  time: number,
+  isFall: boolean,
+  sensitivity: number,
+  manualState: 'safe' | 'fall' | null
+) => {
+  if (isFall) {
+    return clampScore(88 + Math.sin(time / 2) * 5 + Math.random() * 7);
+  }
+
+  if (manualState === 'safe') {
+    return clampScore(8 + Math.sin(time / 12) * 4 + Math.random() * 6);
+  }
+
+  const base = 12 + sensitivity * 18;
+  const walkingPulse = Math.max(0, Math.sin(time / 8)) * (18 + sensitivity * 16);
+  const noise = (Math.random() - 0.5) * (10 + sensitivity * 14);
+  return clampScore(base + walkingPulse + noise);
 };
 
 export function RealtimeMonitoring() {
@@ -97,6 +128,7 @@ export function RealtimeMonitoring() {
   const [rightTab, setRightTab] = useState<'floorplan' | 'rooms'>('floorplan');
   const [selectedRoom, setSelectedRoom] = useState<RoomStatus | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
+  const [holdSimulatedFallMarker, setHoldSimulatedFallMarker] = useState(false);
   const { isDeveloperMode, manualState, sensitivity } = useDeveloper();
 
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
@@ -105,6 +137,9 @@ export function RealtimeMonitoring() {
 
   // isConnected = WebSocket 到 bridge 通了；isHardwareOnline = ESP32 板子實際有插著
   const isHardwareOnline = isConnected && bridgeStatus?.status === 'online';
+  const isManualSimulation = isDeveloperMode && manualState !== null;
+  const isSimulationActive = isSimulating || isManualSimulation;
+  const isRealDataActive = isHardwareOnline && !isSimulationActive;
 
   // Refs to access latest real-time values inside setInterval without restarting it
   const movementScoreRef = useRef(movementScore);
@@ -144,6 +179,14 @@ export function RealtimeMonitoring() {
     return { label: '睡眠 / 靜止', confidence: clamp(82 + Math.round((4 - mean) * 3), 82, 96), icon: '😴' };
   };
 
+  const updateActivitySnapshot = (score: number, isFalling: boolean) => {
+    const normalizedScore = Math.min(100, Math.max(0, score));
+    setMovementScore(Math.round(normalizedScore));
+    setIsFallDetected(isFalling);
+    scoreHistoryRef.current = [...scoreHistoryRef.current.slice(-19), normalizedScore];
+    setHarActivity(classifyActivity(scoreHistoryRef.current, isFalling));
+  };
+
   const areas = user?.role === 'family' 
     ? [`${user.patientName} 的房間`] 
     : ['204 號房', '205 號房', '206 號房', '公共區域', '浴室'];
@@ -158,7 +201,7 @@ export function RealtimeMonitoring() {
       ? Math.round(recent.reduce((a, b) => a + b, 0) / recent.length)
       : movementScore;
     const peakScore = recent.length ? Math.round(Math.max(...recent)) : movementScore;
-    const dataSource = isHardwareOnline ? '實機 ESP32 即時數據'
+    const dataSource = isRealDataActive ? '實機 ESP32 即時數據'
       : (isDeveloperMode && manualState) ? '開發者手動測試'
       : isSimulating ? '模擬數據'
       : '無即時數據';
@@ -215,24 +258,29 @@ export function RealtimeMonitoring() {
 
     const interval = setInterval(() => {
       time += 1;
-      let newPoint: { time: number; subcarrier1: number; subcarrier2: number; subcarrier3: number };
+      let newPoint: WaveformPoint;
 
       if (isDeveloperMode && manualState) {
         const fallEvent = manualState === 'fall';
-        setIsFallDetected(fallEvent);
+        const score = generateSimulatedMovementScore(time, fallEvent, sensitivity, manualState);
+        updateActivitySnapshot(score, fallEvent);
         newPoint = generateData(time, fallEvent, sensitivity);
-      } else if (isHardwareOnline) {
+      } else if (isRealDataActive) {
         // 板子插著：用真實 movement score 驅動波形
         newPoint = generateRealData(time, movementScoreRef.current, isFallRef.current);
       } else if (isSimulating) {
         // 手動開啟模擬模式
         const threshold = sensitivity > 0.8 ? 100 : 150;
         const fallEvent = time % threshold > (threshold - 20) && time % threshold < (threshold - 10);
-        setIsFallDetected(fallEvent);
+        const score = generateSimulatedMovementScore(time, fallEvent, sensitivity, null);
+        updateActivitySnapshot(score, fallEvent);
         newPoint = generateData(time, fallEvent, sensitivity);
       } else {
         // 沒插板子、也沒開模擬 → 平線、無數據
+        scoreHistoryRef.current = [];
+        setMovementScore(0);
         setIsFallDetected(false);
+        setHarActivity({ label: '待機', confidence: 0, icon: '⏸️' });
         newPoint = { time, subcarrier1: 0, subcarrier2: 0, subcarrier3: 0 };
       }
 
@@ -241,10 +289,11 @@ export function RealtimeMonitoring() {
     }, 100);
 
     return () => clearInterval(interval);
-  }, [isDeveloperMode, manualState, sensitivity, isHardwareOnline, isSimulating]);
+  }, [isDeveloperMode, manualState, sensitivity, isRealDataActive, isSimulating]);
 
   // 將 core_bridge.py 的即時數據同步到 UI 狀態
   useEffect(() => {
+    if (isSimulationActive) return;
     if (!bridgeStatus) return;
 
     if (bridgeStatus.status !== 'online') {
@@ -259,15 +308,23 @@ export function RealtimeMonitoring() {
 
     // 更新移動分數
     const score = Math.min(100, Math.max(0, bridgeStatus.ai_analysis.movement_score));
-    setMovementScore(Math.round(score));
+    updateActivitySnapshot(score, bridgeStatus.ai_analysis.is_falling);
+  }, [bridgeStatus, isSimulationActive, isSimulating]);
 
-    // 更新跌倒偵測
-    setIsFallDetected(bridgeStatus.ai_analysis.is_falling);
+  useEffect(() => {
+    if (!isSimulationActive) {
+      setHoldSimulatedFallMarker(false);
+      return;
+    }
 
-    // 保留最近 20 筆 (~2秒) 做模式分析
-    scoreHistoryRef.current = [...scoreHistoryRef.current.slice(-19), score];
-    setHarActivity(classifyActivity(scoreHistoryRef.current, bridgeStatus.ai_analysis.is_falling));
-  }, [bridgeStatus, isSimulating]);
+    if (isFallDetected) {
+      setHoldSimulatedFallMarker(true);
+      return;
+    }
+
+    const timeout = window.setTimeout(() => setHoldSimulatedFallMarker(false), 3500);
+    return () => window.clearTimeout(timeout);
+  }, [isFallDetected, isSimulationActive]);
 
   // Auto-show AI popup when fall is detected
   useEffect(() => {
@@ -278,6 +335,8 @@ export function RealtimeMonitoring() {
 
   const statusText = isFallDetected ? '異常震盪 (跌倒風險)' : '活動中';
   const statusColor = isFallDetected ? 'text-[#FF3B30] bg-[#FF3B30]/10 border-[#FF3B30]/20' : 'text-[#007AFF] bg-[#007AFF]/10 border-[#007AFF]/20';
+  const floorPlanFallVisible = isFallDetected || holdSimulatedFallMarker;
+  const deviceState = isRealDataActive ? 'online' : isSimulationActive ? 'simulating' : isConnected ? 'standby' : 'offline';
 
   const handleExport = (seconds: number) => {
     const pointsToExport = seconds * 10; // 10 points per second
@@ -415,6 +474,8 @@ export function RealtimeMonitoring() {
             <button
               onClick={() => {
                 setIsSimulating(v => !v);
+                scoreHistoryRef.current = [];
+                setHoldSimulatedFallMarker(false);
                 setIsFallDetected(false);
                 setMovementScore(0);
                 setHarActivity({ label: '待機', confidence: 0, icon: '⏸️' });
@@ -432,14 +493,14 @@ export function RealtimeMonitoring() {
           )}
           <div className={cn(
             "flex items-center gap-2 px-4 py-2 rounded-lg shadow-sm border",
-            isHardwareOnline ? "bg-white border-slate-100" : isSimulating ? "bg-amber-50 border-amber-200" : "bg-slate-50 border-slate-200"
+            isRealDataActive ? "bg-white border-slate-100" : isSimulationActive ? "bg-amber-50 border-amber-200" : "bg-slate-50 border-slate-200"
           )}>
             <div className={cn(
               "w-2 h-2 rounded-full",
-              isHardwareOnline ? "bg-[#34C759] animate-pulse" : isSimulating ? "bg-amber-400 animate-pulse" : "bg-slate-300"
+              isRealDataActive ? "bg-[#34C759] animate-pulse" : isSimulationActive ? "bg-amber-400 animate-pulse" : "bg-slate-300"
             )} />
             <span className="text-sm font-medium text-slate-600">
-              {isHardwareOnline ? '系統運作中' : isSimulating ? '模擬模式中' : '無訊號'}
+              {isRealDataActive ? '系統運作中' : isSimulationActive ? '模擬模式中' : '無訊號'}
             </span>
           </div>
         </div>
@@ -455,10 +516,12 @@ export function RealtimeMonitoring() {
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 flex items-center gap-4">
               <div className={cn(
                 "w-12 h-12 rounded-full flex items-center justify-center shrink-0",
-                isHardwareOnline ? "bg-[#34C759]/10" : "bg-red-50"
+                deviceState === 'online' ? "bg-[#34C759]/10" : deviceState === 'simulating' ? "bg-amber-50" : "bg-red-50"
               )}>
-                {isHardwareOnline ? (
+                {deviceState === 'online' ? (
                   <CheckCircle2 className="w-6 h-6 text-[#34C759]" />
+                ) : deviceState === 'simulating' ? (
+                  <Wifi className="w-6 h-6 text-amber-500" />
                 ) : (
                   <WifiOff className="w-6 h-6 text-red-400" />
                 )}
@@ -467,10 +530,21 @@ export function RealtimeMonitoring() {
                 <p className="text-sm text-slate-500 font-medium">設備狀態</p>
                 <h3 className={cn(
                   "text-lg font-bold",
-                  isHardwareOnline ? "text-slate-800" : "text-red-500"
+                  deviceState === 'online' ? "text-slate-800" : deviceState === 'simulating' ? "text-amber-600" : "text-red-500"
                 )}>
-                  {dataStale ? '⚠️ 資料延遲' : isHardwareOnline ? '連線成功' : isConnected ? '板子未插上' : '已斷線'}
+                  {deviceState === 'simulating'
+                    ? '模擬資料輸入'
+                    : dataStale
+                    ? '⚠️ 資料延遲'
+                    : deviceState === 'online'
+                    ? '連線成功'
+                    : deviceState === 'standby'
+                    ? '板子未插上'
+                    : '已斷線'}
                 </h3>
+                {deviceState === 'simulating' && (
+                  <p className="text-[10px] text-amber-500 font-medium">Movement / HAR / 跌倒提示皆為模擬</p>
+                )}
               </div>
             </div>
             
@@ -523,7 +597,7 @@ export function RealtimeMonitoring() {
                 )}>
                   {movementScore > 80 ? '高度活動' : movementScore > 40 ? '中度活動' : '低度 / 靜止'}
                 </p>
-                <p className="text-[10px] text-slate-400 mt-0.5">閾值: 80 | 模式: MVS</p>
+                <p className="text-[10px] text-slate-400 mt-0.5">閾值: 80 | 模式: {isSimulationActive ? 'SIM' : 'MVS'}</p>
               </div>
             </div>
 
@@ -541,7 +615,13 @@ export function RealtimeMonitoring() {
                 </p>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   <div className="w-16 h-1 bg-slate-100 rounded-full overflow-hidden">
-                    <div className="h-full bg-[#007AFF] rounded-full transition-all duration-500" style={{ width: `${harActivity.confidence}%` }} />
+                    <div
+                      className={cn(
+                        "h-full rounded-full transition-all duration-500",
+                        harActivity.label === '跌倒風險' ? "bg-[#FF3B30]" : "bg-[#007AFF]"
+                      )}
+                      style={{ width: `${harActivity.confidence}%` }}
+                    />
                   </div>
                   <span className="text-[10px] text-slate-400 font-mono">{harActivity.confidence}%</span>
                 </div>
@@ -795,19 +875,19 @@ export function RealtimeMonitoring() {
                         
                         {/* Bathroom - Interactive Area */}
                         <button 
-                          onClick={() => isFallDetected && setShowAiPopup(true)}
+                          onClick={() => floorPlanFallVisible && setShowAiPopup(true)}
                           className={cn(
                             "absolute top-0 left-0 w-32 h-32 border-r-2 border-b-2 border-slate-300 flex items-center justify-center transition-all duration-500 group overflow-hidden",
-                            isFallDetected 
+                            floorPlanFallVisible
                               ? "bg-red-500/20 border-red-500/50 shadow-[inset_0_0_20px_rgba(239,68,68,0.2)]" 
                               : "bg-blue-50/30 hover:bg-blue-100/50"
                           )}
                         >
                           <span className={cn(
                             "text-xs font-bold transition-colors",
-                            isFallDetected ? "text-red-600" : "text-slate-400"
+                            floorPlanFallVisible ? "text-red-600" : "text-slate-400"
                           )}>浴室</span>
-                          {isFallDetected && (
+                          {floorPlanFallVisible && (
                             <div className="absolute inset-0 bg-red-500/10 animate-pulse pointer-events-none" />
                           )}
                           <div className="absolute inset-0 bg-gradient-to-b from-transparent via-slate-400/5 to-transparent h-1/2 w-full animate-scan pointer-events-none" />
@@ -854,7 +934,7 @@ export function RealtimeMonitoring() {
                     })()}
 
                     {/* Dynamic Fall Marker */}
-                    {isFallDetected && (
+                    {floorPlanFallVisible && (
                       <div className={cn(
                         "absolute z-20 pointer-events-none",
                         selectedArea === '公共區域' ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" :
@@ -871,7 +951,7 @@ export function RealtimeMonitoring() {
                   </div>
 
                   {/* AI Analysis Popup */}
-                  {showAiPopup && isFallDetected && (
+                  {showAiPopup && floorPlanFallVisible && (
                     <div className="absolute inset-x-4 bottom-4 bg-white rounded-xl shadow-2xl border border-red-100 p-4 z-30 animate-in slide-in-from-bottom-4">
                       <div className="flex items-start justify-between mb-2">
                         <div className="flex items-center gap-2 text-[#FF3B30] font-bold text-sm">
@@ -886,7 +966,7 @@ export function RealtimeMonitoring() {
                         </button>
                       </div>
                       <p className="text-sm text-slate-700 leading-relaxed font-medium">
-                        11:42 AM - 浴室偵測到劇烈訊號變化，與跌倒特徵吻合度 <span className="text-[#FF3B30] font-bold text-base">92%</span>，建議立即查看。
+                        {new Date().toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' })} - {selectedArea}偵測到劇烈訊號變化，與跌倒特徵吻合度 <span className="text-[#FF3B30] font-bold text-base">{Math.max(92, harActivity.confidence)}%</span>，建議立即查看。
                       </p>
                       <div className="mt-3 flex gap-2">
                         <button className="flex-1 bg-[#FF3B30] hover:bg-red-600 text-white text-xs font-bold py-2 rounded-lg transition-colors">
@@ -906,7 +986,7 @@ export function RealtimeMonitoring() {
                 <RoomGrid
                   compact
                   onRoomClick={(room) => setSelectedRoom(room)}
-                  liveScore={isHardwareOnline ? movementScore : undefined}
+                  liveScore={isRealDataActive || isSimulationActive ? movementScore : undefined}
                 />
               </div>
             )}

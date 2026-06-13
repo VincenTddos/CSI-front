@@ -37,6 +37,11 @@ interface UserContextType {
   listAccounts: () => Promise<AccountInfo[]>;
   createAccount: (data: RegisterData) => Promise<AuthResult>;
   setAccountRole: (id: string, role: UserRole) => Promise<AuthResult>;
+  // 開發者專用：以其他角色「檢視」介面（僅影響畫面，不改變真實權限）
+  realRole: UserRole | null;
+  isDeveloper: boolean;
+  viewAsRole: UserRole | null;
+  setViewAsRole: (role: UserRole | null) => void;
 }
 
 const UserContext = createContext<UserContextType | undefined>(undefined);
@@ -77,6 +82,17 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
     const saved = localStorage.getItem('currentUser');
     return saved ? JSON.parse(saved) : null;
   });
+
+  // 開發者「以其他角色檢視」的覆寫（僅前端顯示用；登出時清除）
+  const [viewAsRole, setViewAsRoleState] = useState<UserRole | null>(() => {
+    const saved = localStorage.getItem('viewAsRole');
+    return saved ? (saved as UserRole) : null;
+  });
+  const setViewAsRole = (role: UserRole | null) => {
+    setViewAsRoleState(role);
+    if (role) localStorage.setItem('viewAsRole', role);
+    else localStorage.removeItem('viewAsRole');
+  };
 
   // ---- Supabase 模式：由 profiles 表組出 User（套用開發者覆寫）----
   const buildUserFromProfile = async (
@@ -341,13 +357,27 @@ export function UserProvider({ children }: { children: React.ReactNode }) {
       console.warn('[Auth] signOut 發生錯誤，仍強制登出', e);
     }
     setUser(null);
+    setViewAsRole(null); // 清除開發者檢視覆寫，避免下個帳號沿用
     localStorage.removeItem('currentUser');
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (window as any).google?.accounts?.id?.disableAutoSelect?.();
   };
 
+  // 真實角色（決定權限與開發者切換器是否顯示）vs. 對外曝光的「檢視角色」
+  const realRole = user?.role ?? null;
+  const isDeveloper = realRole === 'developer';
+  // 僅開發者可覆寫；覆寫時連帶套用該角色的 demo 房間/住民綁定，讓預覽更貼近真實
+  const effectiveUser: User | null =
+    user && isDeveloper && viewAsRole && viewAsRole !== user.role
+      ? decorateUser({ id: user.id, name: user.name, role: viewAsRole, avatar: user.avatar })
+      : user;
+
   return (
-    <UserContext.Provider value={{ user, login, register, loginWithGoogle, logout, listAccounts, createAccount, setAccountRole }}>
+    <UserContext.Provider value={{
+      user: effectiveUser, login, register, loginWithGoogle, logout,
+      listAccounts, createAccount, setAccountRole,
+      realRole, isDeveloper, viewAsRole, setViewAsRole,
+    }}>
       {children}
     </UserContext.Provider>
   );
