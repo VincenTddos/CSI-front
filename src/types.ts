@@ -126,6 +126,5 @@ export type Page =
   | 'daily-health'
   | 'routine-checkup'
   | 'health-log'
-  | 'subcarrier'
   | 'occupancy'
   | 'overview';

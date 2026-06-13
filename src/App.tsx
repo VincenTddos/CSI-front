@@ -14,7 +14,6 @@ import {
   DailyHealth,
   RoutineCheckup,
   FamilyHealthLog,
-  SubcarrierAnalyzer,
   RoomOccupancy,
   MonitorOverview,
   Analytics,
@@ -71,7 +70,6 @@ function AppRoutes() {
           <Route path="daily-health" element={<DailyHealth />} />
           <Route path="routine-checkup" element={<RoutineCheckup />} />
           <Route path="health-log" element={<FamilyHealthLog />} />
-          <Route path="subcarrier" element={<SubcarrierAnalyzer />} />
           <Route path="occupancy" element={<RoomOccupancy />} />
           <Route path="overview" element={<MonitorOverview />} />
         </Route>
