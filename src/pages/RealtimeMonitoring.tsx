@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  ResponsiveContainer, 
-  Tooltip 
+import {
+  LineChart,
+  Line,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip
 } from 'recharts';
 import { 
   CheckCircle2, 
@@ -24,7 +26,10 @@ import {
   X,
   Wifi,
   WifiOff,
-  LayoutGrid
+  LayoutGrid,
+  Waves,
+  Signal,
+  Radio
 } from 'lucide-react';
 import { useDeveloper } from '../contexts/DeveloperContext';
 import { useUser } from '../contexts/UserContext';
@@ -35,62 +40,28 @@ import { RoomDetailPanel } from '../components/RoomDetailPanel';
 import { usePatients } from '../hooks/usePatients';
 import { askGemini } from '../services/geminiService';
 
+// 波形圖的單一資料點：movement = 真實移動強度分數 (0–100)，
+// 來自 ESPectre 韌體把所有 CSI 子載波算完後輸出的 mvmt（非合成假資料）。
 type WaveformPoint = {
   time: number;
-  subcarrier1: number;
-  subcarrier2: number;
-  subcarrier3: number;
-};
-
-const generateFallWaveform = (time: number): WaveformPoint => {
-  const impact = Math.sin(time * 1.7) * 78 + (Math.random() - 0.5) * 34;
-  const rebound = Math.cos(time * 2.1) * 68 + (Math.random() - 0.5) * 28;
-
-  return {
-    time,
-    subcarrier1: Math.max(-100, Math.min(100, impact)),
-    subcarrier2: Math.max(-100, Math.min(100, -impact * 0.8 + (Math.random() - 0.5) * 24)),
-    subcarrier3: Math.max(-100, Math.min(100, rebound)),
-  };
-};
-
-// Simulate CSI waveform data (used when NOT connected to real hardware)
-const generateData = (time: number, isFall: boolean, sensitivity: number = 0.5) => {
-  if (isFall) {
-    return generateFallWaveform(time);
-  }
-
-  const base = Math.sin(time / 10) * (6 + sensitivity * 8);
-  const noiseFactor = 4 + sensitivity * 10;
-  const noise1 = (Math.random() * noiseFactor) - (noiseFactor / 2);
-  const noise2 = Math.cos(time / 5) * (5 + sensitivity * 7);
-  const noise3 = Math.sin(time / 3) * (4 + sensitivity * 6);
-
-  return {
-    time,
-    subcarrier1: base + noise1,
-    subcarrier2: base * 0.7 + noise2,
-    subcarrier3: noise3 + noise1 * 0.4,
-  };
-};
-
-// Generate waveform data driven by real movement score from ESP32
-const generateRealData = (time: number, score: number, isFall: boolean) => {
-  if (isFall) {
-    return generateFallWaveform(time);
-  }
-  const norm = Math.min(score, 100) / 100;
-  const center = Math.sin(time / 12) * norm * 12;
-  const spread = 3 + norm * 34;
-  return {
-    time,
-    subcarrier1: center + (Math.random() - 0.5) * spread * 2,
-    subcarrier2: center * 0.85 + (Math.random() - 0.5) * spread * 1.6,
-    subcarrier3: center * 0.7 + (Math.random() - 0.5) * spread * 1.2,
-  };
+  movement: number;
 };
 
 const clampScore = (score: number) => Math.min(100, Math.max(0, Math.round(score)));
+
+// CSI 連結品質分級（給照護人員判讀，不需懂技術名詞）
+type LinkTone = 'good' | 'warn' | 'bad';
+const TONE_CLASS: Record<LinkTone, string> = {
+  good: 'bg-emerald-50 text-emerald-600',
+  warn: 'bg-amber-50 text-amber-600',
+  bad: 'bg-red-50 text-red-600',
+};
+// 封包率（每秒筆數）：越高越即時穩定
+const pktQuality = (n: number): { word: string; tone: LinkTone } =>
+  n >= 80 ? { word: '良好', tone: 'good' } : n >= 40 ? { word: '普通', tone: 'warn' } : { word: '偏低', tone: 'bad' };
+// 訊號強度（dBm，負值越接近 0 越強）
+const rssiQuality = (n: number): { word: string; tone: LinkTone } =>
+  n >= -60 ? { word: '良好', tone: 'good' } : n >= -75 ? { word: '普通', tone: 'warn' } : { word: '偏弱', tone: 'bad' };
 
 const generateSimulatedMovementScore = (
   time: number,
@@ -124,6 +95,7 @@ export function RealtimeMonitoring() {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
   const [movementScore, setMovementScore] = useState(0);
+  const [showLinkHelp, setShowLinkHelp] = useState(false);
   const [harActivity, setHarActivity] = useState<{ label: string; confidence: number; icon: string }>({ label: '待機', confidence: 0, icon: '⏸️' });
   const [rightTab, setRightTab] = useState<'floorplan' | 'rooms'>('floorplan');
   const [selectedRoom, setSelectedRoom] = useState<RoomStatus | null>(null);
@@ -140,6 +112,11 @@ export function RealtimeMonitoring() {
   const isManualSimulation = isDeveloperMode && manualState !== null;
   const isSimulationActive = isSimulating || isManualSimulation;
   const isRealDataActive = isHardwareOnline && !isSimulationActive;
+
+  // CSI 連結品質（給照護人員判讀：良好 / 普通 / 偏弱）
+  const csiLink = bridgeStatus?.csi_link ?? null;
+  const pktQ = csiLink?.pkt_rate != null ? pktQuality(csiLink.pkt_rate) : null;
+  const rssiQ = csiLink?.rssi != null ? rssiQuality(csiLink.rssi) : null;
 
   // Refs to access latest real-time values inside setInterval without restarting it
   const movementScoreRef = useRef(movementScore);
@@ -253,37 +230,38 @@ export function RealtimeMonitoring() {
   // Real-time data stream
   useEffect(() => {
     let time = 50;
-    const flat = Array.from({ length: 50 }, (_, i) => ({ time: i, subcarrier1: 0, subcarrier2: 0, subcarrier3: 0 }));
+    const flat = Array.from({ length: 50 }, (_, i) => ({ time: i, movement: 0 }));
     setData(flat);
 
     const interval = setInterval(() => {
       time += 1;
-      let newPoint: WaveformPoint;
+      let movement: number;
 
       if (isDeveloperMode && manualState) {
         const fallEvent = manualState === 'fall';
         const score = generateSimulatedMovementScore(time, fallEvent, sensitivity, manualState);
         updateActivitySnapshot(score, fallEvent);
-        newPoint = generateData(time, fallEvent, sensitivity);
+        movement = score;
       } else if (isRealDataActive) {
-        // 板子插著：用真實 movement score 驅動波形
-        newPoint = generateRealData(time, movementScoreRef.current, isFallRef.current);
+        // 板子插著：直接畫真實 movement score（ESPectre 由 CSI 子載波算出的 mvmt）
+        movement = movementScoreRef.current;
       } else if (isSimulating) {
         // 手動開啟模擬模式
         const threshold = sensitivity > 0.8 ? 100 : 150;
         const fallEvent = time % threshold > (threshold - 20) && time % threshold < (threshold - 10);
         const score = generateSimulatedMovementScore(time, fallEvent, sensitivity, null);
         updateActivitySnapshot(score, fallEvent);
-        newPoint = generateData(time, fallEvent, sensitivity);
+        movement = score;
       } else {
         // 沒插板子、也沒開模擬 → 平線、無數據
         scoreHistoryRef.current = [];
         setMovementScore(0);
         setIsFallDetected(false);
         setHarActivity({ label: '待機', confidence: 0, icon: '⏸️' });
-        newPoint = { time, subcarrier1: 0, subcarrier2: 0, subcarrier3: 0 };
+        movement = 0;
       }
 
+      const newPoint: WaveformPoint = { time, movement };
       setData(prev => [...prev.slice(1), newPoint]);
       setFullHistory(prev => [...prev, newPoint].slice(-1000));
     }, 100);
@@ -352,14 +330,12 @@ export function RealtimeMonitoring() {
     let fileExtension = "";
 
     if (exportFormat === 'csv') {
-      const headers = ["Timestamp", "Subcarrier_1", "Subcarrier_2", "Subcarrier_3", "Fall_Detected"];
+      const headers = ["Timestamp", "Movement_Score", "Fall_Detected"];
       const csvRows = [
         headers.join(","),
         ...exportData.map(d => [
           d.time,
-          d.subcarrier1.toFixed(2),
-          d.subcarrier2.toFixed(2),
-          d.subcarrier3.toFixed(2),
+          d.movement.toFixed(2),
           isFallDetected ? "1" : "0"
         ].join(","))
       ];
@@ -369,9 +345,7 @@ export function RealtimeMonitoring() {
     } else {
       const jsonData = exportData.map(d => ({
         timestamp: d.time,
-        subcarrier_1: parseFloat(d.subcarrier1.toFixed(2)),
-        subcarrier_2: parseFloat(d.subcarrier2.toFixed(2)),
-        subcarrier_3: parseFloat(d.subcarrier3.toFixed(2)),
+        movement_score: parseFloat(d.movement.toFixed(2)),
         fall_detected: isFallDetected
       }));
       fileContent = JSON.stringify(jsonData, null, 2);
@@ -631,13 +605,69 @@ export function RealtimeMonitoring() {
 
           {/* AI Brain Status (CSI Waveform) */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6 flex-1 flex flex-col min-h-[300px] relative overflow-hidden">
-            <div className="flex items-center justify-between mb-6 z-10">
+            <div className="flex items-start justify-between mb-6 z-10">
               <div>
                 <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                   <Activity className="w-5 h-5 text-[#007AFF]" />
                   AI 大腦狀態 (CSI 感測)
                 </h2>
-                <p className="text-xs text-slate-500 mt-1">Wi-Fi 多子載波即時頻率變化</p>
+                <p className="text-xs text-slate-500 mt-1">CSI 移動強度即時波形（0–100，由所有子載波算出）</p>
+                {isRealDataActive && csiLink && (
+                  <div className="mt-2.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {pktQ && csiLink.pkt_rate != null && (
+                        <span className={cn("flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold", TONE_CLASS[pktQ.tone])}>
+                          <Waves className="w-3 h-3" />
+                          封包率 <span className="font-mono">{csiLink.pkt_rate}</span>
+                          <span className="font-normal opacity-70">/秒 · {pktQ.word}</span>
+                        </span>
+                      )}
+                      {rssiQ && csiLink.rssi != null && (
+                        <span className={cn("flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold", TONE_CLASS[rssiQ.tone])}>
+                          <Signal className="w-3 h-3" />
+                          訊號強度 <span className="font-mono">{csiLink.rssi}</span>
+                          <span className="font-normal opacity-70">dBm · {rssiQ.word}</span>
+                        </span>
+                      )}
+                      {csiLink.channel != null && (
+                        <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-violet-50 text-violet-600 text-[11px] font-bold">
+                          <Radio className="w-3 h-3" />
+                          頻道 <span className="font-mono">{csiLink.channel}</span>
+                        </span>
+                      )}
+                      <button
+                        onClick={() => setShowLinkHelp(v => !v)}
+                        className="flex items-center justify-center w-5 h-5 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors"
+                        title="這些數字怎麼看？"
+                      >
+                        <Info className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {showLinkHelp && (
+                      <div className="mt-2 w-full max-w-md bg-slate-50 rounded-xl border border-slate-200 p-3 animate-in fade-in slide-in-from-top-1 duration-150">
+                        <div className="flex items-center justify-between mb-1.5">
+                          <h4 className="text-[11px] font-bold text-slate-700">這些數字怎麼看？（給照護人員）</h4>
+                          <button onClick={() => setShowLinkHelp(false)} className="text-slate-400 hover:text-slate-600">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        <ul className="space-y-1.5 text-[11px] text-slate-600 leading-relaxed">
+                          <li>
+                            <span className="font-bold text-slate-700">封包率</span>：感測器每秒回傳的資料筆數，越高偵測越即時穩定。
+                            <span className="text-emerald-600 font-bold"> 良好 ≥ 80</span>｜普通 40–79｜<span className="text-red-500 font-bold">偏低 &lt; 40</span>（訊號被擋住或距離太遠，偵測會變遲鈍）。
+                          </li>
+                          <li>
+                            <span className="font-bold text-slate-700">訊號強度</span>：Wi-Fi 訊號強弱，是負數、越接近 0 越強。
+                            <span className="text-emerald-600 font-bold"> 良好 ≥ -60</span>｜普通 -60～-75｜<span className="text-red-500 font-bold">偏弱 &lt; -75</span>（建議把感測器移近，或減少牆面阻隔）。
+                          </li>
+                          <li>
+                            <span className="font-bold text-slate-700">頻道</span>：目前使用的 Wi-Fi 頻道（1–13），只是顯示運作頻段，沒有好壞之分。
+                          </li>
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <div className={cn(
                 "px-4 py-1.5 rounded-full border text-sm font-bold flex items-center gap-2 transition-colors duration-300",
@@ -650,41 +680,31 @@ export function RealtimeMonitoring() {
 
             <div className="flex-1 w-full -ml-4">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+                <AreaChart data={data} margin={{ top: 5, right: 5, left: 0, bottom: 5 }}>
+                  <defs>
+                    <linearGradient id="movementFill" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor={isFallDetected ? "#FF3B30" : "#007AFF"} stopOpacity={0.35} />
+                      <stop offset="100%" stopColor={isFallDetected ? "#FF3B30" : "#007AFF"} stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
                   <XAxis dataKey="time" hide />
-                  <YAxis domain={[-100, 100]} hide />
-                  <Tooltip 
+                  <YAxis domain={[0, 100]} hide />
+                  <Tooltip
                     contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                     labelStyle={{ display: 'none' }}
+                    formatter={(v: number) => [Math.round(v), '移動強度']}
                   />
-                  <Line 
-                    type="monotone" 
-                    dataKey="subcarrier1" 
-                    stroke={isFallDetected ? "#FF3B30" : "#007AFF"} 
-                    strokeWidth={2} 
-                    dot={false} 
+                  <Area
+                    type="monotone"
+                    dataKey="movement"
+                    stroke={isFallDetected ? "#FF3B30" : "#007AFF"}
+                    strokeWidth={2.5}
+                    fill="url(#movementFill)"
+                    dot={false}
                     isAnimationActive={false}
                   />
-                  <Line 
-                    type="monotone" 
-                    dataKey="subcarrier2" 
-                    stroke={isFallDetected ? "#ff6b6b" : "#4dabf7"} 
-                    strokeWidth={2} 
-                    dot={false} 
-                    isAnimationActive={false}
-                    opacity={0.7}
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="subcarrier3" 
-                    stroke={isFallDetected ? "#fa5252" : "#339af0"} 
-                    strokeWidth={2} 
-                    dot={false} 
-                    isAnimationActive={false}
-                    opacity={0.4}
-                  />
-                </LineChart>
+                </AreaChart>
               </ResponsiveContainer>
             </div>
             
@@ -710,62 +730,71 @@ export function RealtimeMonitoring() {
 
           {/* Small Dynamic CSI Waveform Charts Container */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Subcarrier Detail (Amplitude) */}
+            {/* 即時移動強度 */}
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 h-32 relative overflow-hidden">
               <div className="flex items-center justify-between mb-2 z-10 relative">
                 <h3 className="text-xs font-bold text-slate-500 flex items-center gap-1.5">
-                  <Activity className="w-3.5 h-3.5" />
-                  子載波振幅監控 (CSI Amplitude)
+                  <Activity className="w-3.5 h-3.5 text-[#007AFF]" />
+                  即時移動強度
                 </h3>
-                <span className="text-[10px] font-mono text-slate-400">Stream A</span>
+                <span className="text-sm font-mono font-bold text-[#007AFF]">
+                  {movementScore}<span className="text-[10px] text-slate-400 font-normal ml-0.5">/100</span>
+                </span>
               </div>
               <div className="h-16 w-full -ml-4">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data.slice(-20)}>
-                    <Line 
-                      type="step" 
-                      dataKey="subcarrier1" 
-                      stroke="#007AFF" 
-                      strokeWidth={1.5} 
-                      dot={false} 
+                  <AreaChart data={data.slice(-30)}>
+                    <defs>
+                      <linearGradient id="miniMovementFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#007AFF" stopOpacity={0.28} />
+                        <stop offset="100%" stopColor="#007AFF" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <Area
+                      type="monotone"
+                      dataKey="movement"
+                      stroke="#007AFF"
+                      strokeWidth={2}
+                      fill="url(#miniMovementFill)"
+                      dot={false}
                       isAnimationActive={false}
                     />
-                    <Line 
-                      type="step" 
-                      dataKey="subcarrier2" 
-                      stroke="#4dabf7" 
-                      strokeWidth={1} 
-                      dot={false} 
-                      isAnimationActive={false}
-                      opacity={0.5}
-                    />
-                  </LineChart>
+                  </AreaChart>
                 </ResponsiveContainer>
               </div>
               <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808008_1px,transparent_1px),linear-gradient(to_bottom,#80808008_1px,transparent_1px)] bg-[size:12px_12px] pointer-events-none" />
             </div>
 
-            {/* Phase Variance (Activity Intensity) */}
+            {/* 活動強度變化（移動分數變化量） */}
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 h-32 relative overflow-hidden">
               <div className="flex items-center justify-between mb-2 z-10 relative">
                 <h3 className="text-xs font-bold text-slate-500 flex items-center gap-1.5">
-                  <Activity className="w-3.5 h-3.5" />
-                  相位變異監控 (Phase Variance)
+                  <Activity className={cn("w-3.5 h-3.5", isFallDetected ? "text-[#FF3B30]" : "text-[#34C759]")} />
+                  活動強度變化
                 </h3>
-                <span className="text-[10px] font-mono text-slate-400">Activity Level</span>
+                <span className={cn("text-sm font-mono font-bold", isFallDetected ? "text-[#FF3B30]" : "text-[#34C759]")}>
+                  Δ {data.length > 1 ? Math.round(Math.abs(data[data.length - 1].movement - data[data.length - 2].movement)) : 0}
+                </span>
               </div>
               <div className="h-16 w-full -ml-4">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data.slice(-20)}>
-                    <Line 
-                      type="monotone" 
-                      dataKey={(d) => Math.abs(d.subcarrier1 - d.subcarrier2)} 
-                      stroke={isFallDetected ? "#FF3B30" : "#34C759"} 
-                      strokeWidth={2} 
-                      dot={false} 
+                  <AreaChart data={data.slice(-30).map((d, i, a) => ({ time: d.time, delta: i > 0 ? Math.abs(d.movement - a[i - 1].movement) : 0 }))}>
+                    <defs>
+                      <linearGradient id="miniDeltaFill" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor={isFallDetected ? "#FF3B30" : "#34C759"} stopOpacity={0.28} />
+                        <stop offset="100%" stopColor={isFallDetected ? "#FF3B30" : "#34C759"} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <Area
+                      type="monotone"
+                      dataKey="delta"
+                      stroke={isFallDetected ? "#FF3B30" : "#34C759"}
+                      strokeWidth={2}
+                      fill="url(#miniDeltaFill)"
+                      dot={false}
                       isAnimationActive={false}
                     />
-                  </LineChart>
+                  </AreaChart>
                 </ResponsiveContainer>
               </div>
               <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808008_1px,transparent_1px),linear-gradient(to_bottom,#80808008_1px,transparent_1px)] bg-[size:12px_12px] pointer-events-none" />

@@ -209,6 +209,11 @@ class SharedState:
         self._location_x: Optional[float] = None
         self._location_y: Optional[float] = None
 
+        # -- CSI 連結即時資訊（Serial 模式從 ESPectre 韌體那行解析出來）--
+        self._csi_pkt_rate: Optional[int] = None   # 每秒 CSI 封包數
+        self._csi_channel: Optional[int] = None     # Wi-Fi 頻道
+        self._csi_rssi: Optional[int] = None         # 訊號強度 (dBm)
+
         # -- 子系統狀態旗標 --
         self._serial_online: bool = False
         self._wifi_online: bool = False
@@ -277,6 +282,24 @@ class SharedState:
     def get_location(self) -> tuple:
         with self._lock:
             return (self._location_x, self._location_y)
+
+    # ---- CSI 連結資訊（pkt/s, channel, rssi）---- #
+    def set_csi_link(self, pkt_rate: Optional[int], channel: Optional[int], rssi: Optional[int]) -> None:
+        with self._lock:
+            if pkt_rate is not None:
+                self._csi_pkt_rate = pkt_rate
+            if channel is not None:
+                self._csi_channel = channel
+            if rssi is not None:
+                self._csi_rssi = rssi
+
+    def get_csi_link(self) -> dict:
+        with self._lock:
+            return {
+                "pkt_rate": self._csi_pkt_rate,
+                "channel": self._csi_channel,
+                "rssi": self._csi_rssi,
+            }
 
     # ---- 子系統狀態 ---- #
     def set_sensor_online(self, status: bool) -> None:
@@ -900,9 +923,13 @@ def serial_reader_thread() -> None:
     """
     logger.info("[Serial] Thread started, target: %s @ %d baud", SERIAL_PORT, SERIAL_BAUD)
 
-    # ESPectre firmware 格式: "... | mvmt:0.6572 thr:1.0000 | IDLE | ..."
+    # ESPectre firmware 格式:
+    #   "... | mvmt:0.6572 thr:1.0000 | IDLE | 109 pkt/s | ch:6 rssi:-47"
     score_pattern = re.compile(r"\bmvmt:([\d.]+)", re.IGNORECASE)
     motion_pattern = re.compile(r"\b(MOTION|IDLE)\b")
+    pkt_pattern = re.compile(r"(\d+)\s*pkt/s", re.IGNORECASE)
+    ch_pattern = re.compile(r"\bch:(\d+)")
+    rssi_pattern = re.compile(r"\brssi:(-?\d+)")
 
     while not shutdown_event.is_set():
         ser: Optional[serial.Serial] = None
@@ -950,6 +977,15 @@ def serial_reader_thread() -> None:
                         is_motion = m.group(1).upper() == "MOTION" if m else None
                         # 感測器融合：動作尖峰 + 位置靜止雙條件確認
                         state.set_fall_detected(fusion_detector.update(raw_score, is_motion))
+                        # 額外解析 CSI 連結資訊（封包率 / 頻道 / 訊號強度）供前端顯示真實小數據
+                        pkt_m = pkt_pattern.search(line)
+                        ch_m = ch_pattern.search(line)
+                        rssi_m = rssi_pattern.search(line)
+                        state.set_csi_link(
+                            int(pkt_m.group(1)) if pkt_m else None,
+                            int(ch_m.group(1)) if ch_m else None,
+                            int(rssi_m.group(1)) if rssi_m else None,
+                        )
                         logger.info("[Serial] mvmt=%.4f raw=%.1f ui=%.1f motion=%s",
                                      raw_mvmt, raw_score, ui_score,
                                      m.group(1) if m else "?")
@@ -1421,6 +1457,7 @@ def build_broadcast_payload() -> str:
             "movement_threshold": round(ble_metrics["movement_threshold"], 6) if ble_metrics["movement_threshold"] is not None else None,
         },
         "data_source": state.get_data_source(),
+        "csi_link": state.get_csi_link(),
         "location": {
             "raw_x": round(loc_x, 4) if loc_x is not None else None,
             "raw_y": round(loc_y, 4) if loc_y is not None else None,

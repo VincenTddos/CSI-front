@@ -38,6 +38,12 @@ export interface CoreBridgePacket {
     raw_x: number | null;
     raw_y: number | null;
   };
+  // CSI 連結即時資訊（Serial 模式由 ESPectre 韌體那行解析；無資料則為 null）
+  csi_link?: {
+    pkt_rate: number | null;  // 每秒 CSI 封包數
+    channel: number | null;   // Wi-Fi 頻道
+    rssi: number | null;      // 訊號強度 (dBm)
+  };
   settings?: SystemSettingsState;
   timestamp: string; // ISO8601
 }
