@@ -101,7 +101,7 @@ export function RealtimeMonitoring() {
   const [selectedRoom, setSelectedRoom] = useState<RoomStatus | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
   const [holdSimulatedFallMarker, setHoldSimulatedFallMarker] = useState(false);
-  const { isDeveloperMode, manualState, sensitivity } = useDeveloper();
+  const { isDeveloperMode, manualState, sensitivity, waveformSmoothing } = useDeveloper();
 
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
   const { isConnected, dataStale, bridgeStatus, locationData } = useCSIWebSocket();
@@ -121,6 +121,11 @@ export function RealtimeMonitoring() {
   // Refs to access latest real-time values inside setInterval without restarting it
   const movementScoreRef = useRef(movementScore);
   const isFallRef = useRef(isFallDetected);
+  // 顯示用的平滑後移動值（自適應 EMA：讓波形更平順、不隨環境雜訊亂跳）
+  const displayMovementRef = useRef(0);
+  // 平滑強度（0~100）用 ref 讀取，調滑桿可即時生效又不會重置波形
+  const smoothingRef = useRef(waveformSmoothing);
+  useEffect(() => { smoothingRef.current = waveformSmoothing; }, [waveformSmoothing]);
   useEffect(() => { movementScoreRef.current = movementScore; }, [movementScore]);
   useEffect(() => { isFallRef.current = isFallDetected; }, [isFallDetected]);
 
@@ -232,34 +237,47 @@ export function RealtimeMonitoring() {
     let time = 50;
     const flat = Array.from({ length: 50 }, (_, i) => ({ time: i, movement: 0 }));
     setData(flat);
+    displayMovementRef.current = 0;
 
     const interval = setInterval(() => {
       time += 1;
-      let movement: number;
+      let target: number;
 
       if (isDeveloperMode && manualState) {
         const fallEvent = manualState === 'fall';
         const score = generateSimulatedMovementScore(time, fallEvent, sensitivity, manualState);
         updateActivitySnapshot(score, fallEvent);
-        movement = score;
+        target = score;
       } else if (isRealDataActive) {
-        // 板子插著：直接畫真實 movement score（ESPectre 由 CSI 子載波算出的 mvmt）
-        movement = movementScoreRef.current;
+        // 板子插著：目標值為真實 movement score（ESPectre 由 CSI 子載波算出的 mvmt）
+        target = movementScoreRef.current;
       } else if (isSimulating) {
         // 手動開啟模擬模式
         const threshold = sensitivity > 0.8 ? 100 : 150;
         const fallEvent = time % threshold > (threshold - 20) && time % threshold < (threshold - 10);
         const score = generateSimulatedMovementScore(time, fallEvent, sensitivity, null);
         updateActivitySnapshot(score, fallEvent);
-        movement = score;
+        target = score;
       } else {
         // 沒插板子、也沒開模擬 → 平線、無數據
         scoreHistoryRef.current = [];
         setMovementScore(0);
         setIsFallDetected(false);
         setHarActivity({ label: '待機', confidence: 0, icon: '⏸️' });
-        movement = 0;
+        target = 0;
       }
+
+      // 自適應平滑（EMA）：真實值約每秒一筆，這裡每 0.1 秒把顯示值朝目標補間。
+      // 變化大→反應快（即時，跌倒尖峰跟得上）；變化小→收斂慢（平順，濾掉環境雜訊亂跳）。
+      // 平滑強度由設定滑桿控制：0=最即時(alpha 高)、100=最平順(alpha 低)。
+      const sm = Math.min(1, Math.max(0, (smoothingRef.current ?? 60) / 100));
+      const alphaSmall = 0.5 - sm * 0.45;                 // 0.5(即時) → 0.05(平順)
+      const alphaBig = Math.min(0.7, alphaSmall + 0.35);  // 大跳動恆比小抖動快
+      const cur = displayMovementRef.current;
+      const diff = target - cur;
+      const alpha = Math.abs(diff) > 25 ? alphaBig : alphaSmall;
+      const movement = Math.max(0, Math.min(100, cur + diff * alpha));
+      displayMovementRef.current = movement;
 
       const newPoint: WaveformPoint = { time, movement };
       setData(prev => [...prev.slice(1), newPoint]);

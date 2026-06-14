@@ -9,7 +9,7 @@ interface SettingsModalProps {
 }
 
 export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
-  const { isDeveloperMode, setIsDeveloperMode, sceneMode, setSceneMode } = useDeveloper();
+  const { isDeveloperMode, setIsDeveloperMode, sceneMode, setSceneMode, waveformSmoothing, setWaveformSmoothing } = useDeveloper();
 
   if (!isOpen) return null;
 
@@ -105,6 +105,30 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 </p>
               </div>
             )}
+          </section>
+
+          {/* 波形平滑強度 */}
+          <section className="pt-6 border-t border-slate-100">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h4 className="font-bold text-slate-800 text-sm">波形平滑強度</h4>
+                <p className="text-xs text-slate-500 mt-0.5">調整即時監控波形的平順度（僅影響顯示，不影響偵測）</p>
+              </div>
+              <span className="text-sm font-mono font-bold text-[#007AFF]">{waveformSmoothing}</span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={waveformSmoothing}
+              onChange={(e) => setWaveformSmoothing(Number(e.target.value))}
+              className="w-full accent-[#007AFF] cursor-pointer"
+            />
+            <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+              <span>更即時（反應快）</span>
+              <span>更平順（抗雜訊）</span>
+            </div>
           </section>
         </div>
 
