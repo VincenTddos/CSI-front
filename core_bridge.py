@@ -40,6 +40,22 @@ from typing import Optional
 
 import numpy as np
 
+# 載入專案根目錄 .env（讓後端與前端共用同一份設定）。自行解析，不依賴第三方套件。
+def _load_dotenv(path: str = ".env") -> None:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                # 真實環境變數優先；.env 僅補未設定者
+                os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+    except FileNotFoundError:
+        pass
+
+_load_dotenv()
+
 # --------------------------------------------------------------------------- #
 #  第三方套件匯入 (含安裝提示)
 # --------------------------------------------------------------------------- #
