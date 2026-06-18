@@ -45,6 +45,7 @@ import { askGemini } from '../services/geminiService';
 type WaveformPoint = {
   time: number;
   movement: number;
+  ts?: number; // 真實建立時間（epoch ms），供匯出真實時間戳；圖表仍用 time 流水號當 x 軸
 };
 
 const clampScore = (score: number) => Math.min(100, Math.max(0, Math.round(score)));
@@ -279,7 +280,7 @@ export function RealtimeMonitoring() {
       const movement = Math.max(0, Math.min(100, cur + diff * alpha));
       displayMovementRef.current = movement;
 
-      const newPoint: WaveformPoint = { time, movement };
+      const newPoint: WaveformPoint = { time, movement, ts: Date.now() };
       setData(prev => [...prev.slice(1), newPoint]);
       setFullHistory(prev => [...prev, newPoint].slice(-1000));
     }, 100);
@@ -347,12 +348,16 @@ export function RealtimeMonitoring() {
     let mimeType = "";
     let fileExtension = "";
 
+    // 真實 ISO 8601 時間戳（與 core_bridge --record 的 {ts} 一致）；缺值不捏造，留空
+    const toIso = (d: { ts?: number }) =>
+      Number.isFinite(d.ts) ? new Date(d.ts as number).toISOString() : "";
+
     if (exportFormat === 'csv') {
       const headers = ["Timestamp", "Movement_Score", "Fall_Detected"];
       const csvRows = [
         headers.join(","),
         ...exportData.map(d => [
-          d.time,
+          toIso(d),
           d.movement.toFixed(2),
           isFallDetected ? "1" : "0"
         ].join(","))
@@ -362,7 +367,7 @@ export function RealtimeMonitoring() {
       fileExtension = 'csv';
     } else {
       const jsonData = exportData.map(d => ({
-        timestamp: d.time,
+        timestamp: toIso(d),
         movement_score: parseFloat(d.movement.toFixed(2)),
         fall_detected: isFallDetected
       }));

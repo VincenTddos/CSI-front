@@ -1,17 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-csi_pipeline.py — Wi-Care CSI 訊號處理管線示範
+csi_pipeline.py — Wi-Care **movement score** 訊號處理管線示範
 
-處理鏈：原始 CSI 振幅序列
+⚠️ 資料契約釐清（兩條不同的流，勿混用）：
+  ┌─ score 流（**本檔處理的對象**）
+  │   來源：core_bridge.py --record 的 {ts, score} jsonl
+  │   內容：ESPectre 韌體算好的 movement **分數**純量時序（約 10 Hz，0-100）
+  │   讀取：load_recording() / python/recording_io.load_score_recording()
+  │   用途：本檔的去噪 + 特徵 + STFT、以及 python/sleep_quality.py 的睡眠分析
+  └─ 原始 CSI 流（**不是本檔**）
+      內容：per-subcarrier 的 CSI 振幅（複數→振幅），需第二顆 ESP32 燒 esp-csi 才取得
+      處理：python/breathing.py（CsiFrame 契約 + 呼吸率估算）
+
+歷史備註：早期 docstring 誤寫本檔處理「原始 CSI 振幅序列」，但 load_recording()
+實際讀的是 score 欄位。實作沒有改變，這裡只把契約講清楚：本檔自始至終處理的是
+**movement 分數**純量序列，非 per-subcarrier 原始 CSI。
+
+處理鏈（作用在 score 純量序列上）：
+        movement score 序列
         → Hampel 過濾 (去離群值)
         → Butterworth 低通 (去高頻雜訊)
         → 特徵萃取 (方差 / 能量 / 峰均比 / 頻譜熵)
         → STFT 時頻分析 (跌倒 vs 行走的頻譜特徵)
 
 依賴：pip install numpy scipy matplotlib
-用法：python csi_pipeline.py recording.jsonl   # 處理 core_bridge --record 的輸出
-      python csi_pipeline.py --demo            # 用合成資料示範
+用法：python csi_pipeline.py recording.jsonl   # 處理 core_bridge --record 的 score 輸出
+      python csi_pipeline.py --demo            # 用合成 score 資料示範（僅 CLI 展示，非 live 路徑）
 """
 
 import json
@@ -101,7 +116,11 @@ def make_demo_signal(duration_sec: float = 60.0, fs: float = FS) -> np.ndarray:
 
 
 def load_recording(path: str) -> np.ndarray:
-    """讀取 core_bridge --record 輸出的 jsonl (每行一筆 {ts, score})。"""
+    """讀取 core_bridge --record 輸出的 jsonl，回傳 **score**（movement 分數）序列。
+
+    注意：取的是每行的 `score` 欄位（純量分數，非 per-subcarrier 原始 CSI）。
+    需要連同時間戳的版本請用 python/recording_io.load_score_recording()。
+    """
     scores = []
     with open(path, encoding="utf-8") as fh:
         for line in fh:
