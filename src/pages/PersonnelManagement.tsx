@@ -6,21 +6,9 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { UserRole, Patient } from '../types';
-import { usePatients } from '../hooks/usePatients';
+import { useData } from '../contexts/DataContext';
 
-const PATIENTS_STORAGE_KEY = 'csi_patients';
 const PERSONNEL_STORAGE_KEY = 'csi_personnel';
-
-// ===== Patient helpers =====
-function loadPatients(): Patient[] {
-  const saved = localStorage.getItem(PATIENTS_STORAGE_KEY);
-  if (saved) { try { return JSON.parse(saved); } catch { /* ignore */ } }
-  return [];
-}
-
-function savePatientsList(patients: Patient[]) {
-  localStorage.setItem(PATIENTS_STORAGE_KEY, JSON.stringify(patients));
-}
 
 // ===== Personnel types =====
 interface Personnel {
@@ -79,12 +67,8 @@ export function PersonnelManagement() {
   const [editingPersonnel, setEditingPersonnel] = useState<Personnel | null>(null);
   const [isNewPersonnel, setIsNewPersonnel] = useState(false);
 
-  // — Patients state —（初始用本機快取，掛載後以真實住民資料覆蓋）
-  const [patients, setPatients] = useState<Patient[]>(loadPatients);
-  const { patients: remotePatients } = usePatients();
-  useEffect(() => {
-    if (remotePatients.length) setPatients(remotePatients);
-  }, [remotePatients]);
+  // — Patients —（直接讀寫單一事實來源 DataContext，所有頁面即時同步）
+  const { residents: patients, addResident, updateResident, deleteResident } = useData();
   const [patientSearch, setPatientSearch] = useState('');
   const [isPatientModalOpen, setIsPatientModalOpen] = useState(false);
   const [editingPatient, setEditingPatient] = useState<Patient | null>(null);
@@ -92,8 +76,7 @@ export function PersonnelManagement() {
   const [newMed, setNewMed] = useState('');
   const [showSavedMsg, setShowSavedMsg] = useState(false);
 
-  // Sync to localStorage
-  useEffect(() => { savePatientsList(patients); }, [patients]);
+  // Sync personnel to its own store（住民資料已由 DataContext 自動持久化）
   useEffect(() => { savePersonnelList(personnelList); }, [personnelList]);
 
   // ===== Personnel logic =====
@@ -160,15 +143,16 @@ export function PersonnelManagement() {
   };
 
   const deletePatient = (id: string) => {
-    setPatients(prev => prev.filter(p => p.id !== id));
+    // 刪除住民會連動清除其健康記錄與警報（參照完整性）
+    deleteResident(id);
   };
 
   const handleSavePatient = () => {
     if (!editingPatient || !editingPatient.name.trim()) return;
     if (isNewPatient) {
-      setPatients(prev => [...prev, editingPatient]);
+      addResident(editingPatient);
     } else {
-      setPatients(prev => prev.map(p => p.id === editingPatient.id ? editingPatient : p));
+      updateResident(editingPatient.id, editingPatient);
     }
     setIsPatientModalOpen(false);
     setEditingPatient(null);

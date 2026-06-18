@@ -23,6 +23,7 @@ import {
 } from './pages';
 import { DeveloperProvider, useDeveloper } from './contexts/DeveloperContext';
 import { UserProvider, useUser } from './contexts/UserContext';
+import { DataProvider } from './contexts/DataContext';
 
 function DevBackdoor() {
   const { isDeveloperMode, setManualState } = useDeveloper();
@@ -85,9 +86,11 @@ export default function App() {
   return (
     <UserProvider>
       <DeveloperProvider>
-        <BrowserRouter>
-          <AppRoutes />
-        </BrowserRouter>
+        <DataProvider>
+          <BrowserRouter>
+            <AppRoutes />
+          </BrowserRouter>
+        </DataProvider>
       </DeveloperProvider>
     </UserProvider>
   );

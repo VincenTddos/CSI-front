@@ -42,28 +42,53 @@ export function Sidebar() {
   // Parse current route to match item type
   const currentPage = location.pathname.substring(1) || 'realtime';
 
-  const menuItems = [
-    { id: 'realtime', label: '監控面板', icon: Activity, roles: ['admin', 'medical', 'family'] },
-    { id: 'patients', label: '受護者', icon: Contact, roles: ['admin', 'medical'] },
-    { id: 'health-log', label: '健康日誌', icon: BookHeart, roles: ['family'] },
-    { id: 'device', label: '區域管理', icon: MonitorSmartphone, roles: ['admin', 'medical', 'family'] },
-    { id: 'occupancy', label: '房間佔用', icon: LayoutGrid, roles: ['admin', 'medical'] },
-    { id: 'overview', label: '機構總覽', icon: Building2, roles: ['admin', 'medical'] },
-    { id: 'daily-health', label: '每日健康', icon: HeartPulse, roles: ['admin', 'medical'] },
-    { id: 'routine-checkup', label: '日常檢查', icon: ClipboardList, roles: ['admin', 'medical'] },
-    { id: 'personnel', label: '人員管理', icon: Users, roles: ['admin'] },
-    { id: 'accounts', label: '帳號管理', icon: KeyRound, roles: ['admin'] },
-    { id: 'health', label: '健康報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
-    { id: 'analytics', label: '管理報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
-    { id: 'insights', label: '智慧分析', icon: Sparkles, roles: ['admin', 'medical', 'family'] },
-    { id: 'alerts', label: '警報通知', icon: BellRing, roles: ['admin', 'medical', 'family'] },
-    { id: 'settings', label: '系統設定', icon: Settings, roles: ['admin', 'medical'] },
+  // 側邊欄資訊架構（IA）：依功能類型分為五區，區內依使用頻率排序
+  const menuSections = [
+    {
+      section: '即時監控',
+      items: [
+        { id: 'realtime', label: '監控面板', icon: Activity, roles: ['admin', 'medical', 'family'] },
+        { id: 'alerts', label: '警報通知', icon: BellRing, roles: ['admin', 'medical', 'family'] },
+      ],
+    },
+    {
+      section: '照護作業',
+      items: [
+        { id: 'patients', label: '受護者', icon: Contact, roles: ['admin', 'medical'] },
+        { id: 'health-log', label: '健康日誌', icon: BookHeart, roles: ['family'] },
+        { id: 'daily-health', label: '每日健康', icon: HeartPulse, roles: ['admin', 'medical'] },
+        { id: 'routine-checkup', label: '日常檢查', icon: ClipboardList, roles: ['admin', 'medical'] },
+      ],
+    },
+    {
+      section: '報表分析',
+      items: [
+        { id: 'health', label: '健康報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
+        { id: 'analytics', label: '管理報表', icon: BarChart3, roles: ['admin', 'medical', 'family'] },
+        { id: 'insights', label: '智慧分析', icon: Sparkles, roles: ['admin', 'medical', 'family'] },
+      ],
+    },
+    {
+      section: '空間設定',
+      items: [
+        { id: 'device', label: '區域管理', icon: MonitorSmartphone, roles: ['admin', 'medical', 'family'] },
+        { id: 'occupancy', label: '房間佔用', icon: LayoutGrid, roles: ['admin', 'medical'] },
+        { id: 'overview', label: '機構總覽', icon: Building2, roles: ['admin', 'medical'] },
+      ],
+    },
+    {
+      section: '系統管理',
+      items: [
+        { id: 'personnel', label: '人員管理', icon: Users, roles: ['admin'] },
+        { id: 'accounts', label: '帳號管理', icon: KeyRound, roles: ['admin'] },
+        { id: 'settings', label: '系統設定', icon: Settings, roles: ['admin', 'medical'] },
+      ],
+    },
   ] as const;
 
-  const filteredItems = menuItems.filter(item =>
+  const canView = (item: { roles?: readonly string[] }) =>
     !item.roles ||
-    (user && (canSeeAll(user.role) || (item.roles as readonly string[]).includes(user.role)))
-  );
+    (user && (canSeeAll(user.role) || (item.roles as readonly string[]).includes(user.role)));
 
   const currentRole = ROLES.find(r => r.id === user?.role);
 
@@ -135,26 +160,37 @@ export function Sidebar() {
         </button>
       </div>
 
-      <nav className="flex-1 py-6 px-3 space-y-1 overflow-y-auto">
-        {filteredItems.map((item) => {
-          const isActive = currentPage === item.id;
+      <nav className="flex-1 py-6 px-3 space-y-5 overflow-y-auto">
+        {menuSections.map((section) => {
+          const visibleItems = section.items.filter(canView);
+          if (visibleItems.length === 0) return null;
           return (
-            <button
-              key={item.id}
-              onClick={() => navigate(`/${item.id}`)}
-              className={cn(
-                "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 relative group",
-                isActive
-                  ? "bg-[#1E252B] text-white shadow-inner"
-                  : "hover:bg-[#3A4651] hover:text-white"
-              )}
-            >
-              {isActive && (
-                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-8 bg-[#007AFF] rounded-r-full" />
-              )}
-              <item.icon className={cn("w-5 h-5", isActive ? "text-[#007AFF]" : "text-slate-400 group-hover:text-slate-300")} />
-              {item.label}
-            </button>
+            <div key={section.section} className="space-y-1">
+              <h3 className="px-4 mb-1 text-[10px] font-bold uppercase tracking-widest text-slate-500 select-none">
+                {section.section}
+              </h3>
+              {visibleItems.map((item) => {
+                const isActive = currentPage === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => navigate(`/${item.id}`)}
+                    className={cn(
+                      "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 relative group",
+                      isActive
+                        ? "bg-[#1E252B] text-white shadow-inner"
+                        : "hover:bg-[#3A4651] hover:text-white"
+                    )}
+                  >
+                    {isActive && (
+                      <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-8 bg-[#007AFF] rounded-r-full" />
+                    )}
+                    <item.icon className={cn("w-5 h-5", isActive ? "text-[#007AFF]" : "text-slate-400 group-hover:text-slate-300")} />
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
           );
         })}
       </nav>

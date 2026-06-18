@@ -5,19 +5,17 @@ import {
 } from 'recharts';
 import { BarChart3, AlertTriangle, CheckCircle, Activity, Cpu, Download } from 'lucide-react';
 import { getDailyFallStats, getDailyActivity, getDeviceHealth } from '../services/analyticsService';
-import { listResidents } from '../services/residentsService';
 import { exportToCsv, exportToJson, timestampedName } from '../services/exportService';
-import type { DailyFallStatRow, DailyActivityRow, DeviceHealthRow, ResidentRow } from '../services/database.types';
+import type { DailyFallStatRow, DailyActivityRow, DeviceHealthRow } from '../services/database.types';
+import { useData } from '../contexts/DataContext';
 
 export function Analytics() {
-  const [residents, setResidents] = useState<ResidentRow[]>([]);
+  const { residents } = useData(); // 住民下拉與其他頁面共用同一份資料
   const [residentId, setResidentId] = useState<string>('');
   const [fallStats, setFallStats] = useState<DailyFallStatRow[]>([]);
   const [activity, setActivity] = useState<DailyActivityRow[]>([]);
   const [devices, setDevices] = useState<DeviceHealthRow[]>([]);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => { listResidents().then(setResidents).catch(() => {}); }, []);
 
   useEffect(() => {
     setLoading(true);

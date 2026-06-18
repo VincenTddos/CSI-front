@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, ResponsiveContainer, Tooltip, BarChart, Bar
 } from 'recharts';
@@ -6,16 +6,9 @@ import { Activity, Pill, Droplet, Scale, LineChart as ChartIcon, HeartPulse, Cli
 import { useUser } from '../contexts/UserContext';
 import { cn } from '../lib/utils';
 import { usePatients } from '../hooks/usePatients';
-
-const DAILY_KEY = 'csi_daily_health';
-const CHECKUP_KEY = 'csi_routine_checkup';
-const ALERTS_KEY = 'csi_alerts';
-
-function load(key: string) {
-  const saved = localStorage.getItem(key);
-  if (saved) { try { return JSON.parse(saved); } catch { /* */ } }
-  return null;
-}
+import { useData } from '../contexts/DataContext';
+import { listAlerts } from '../services/alertsService';
+import type { FallEventRow } from '../services/database.types';
 
 // Generate mock weekly trend data for a patient
 function generateWeeklyTrend(patientId: string) {
@@ -35,19 +28,28 @@ function generateWeeklyTrend(patientId: string) {
 export function HealthReports() {
   const { user } = useUser();
   const { patients, loading, error } = usePatients();
-  const dailyRecords: any[] = load(DAILY_KEY) || [];
-  const checkupRecords: any[] = load(CHECKUP_KEY) || [];
-  const alerts: any[] = load(ALERTS_KEY) || [];
+  const { dailyHealth, checkups } = useData();
 
   const [selectedPatientIndex, setSelectedPatientIndex] = useState(0);
   const [activeChart, setActiveChart] = useState<'bp' | 'sugar' | 'weight'>('bp');
+  const [alerts, setAlerts] = useState<FallEventRow[]>([]);
+  useEffect(() => { listAlerts(500).then(setAlerts).catch(() => {}); }, []);
 
   const patient = patients[selectedPatientIndex];
-  const daily = dailyRecords.find((r: any) => r.patientId === patient?.id);
-  const checkup = checkupRecords.find((r: any) => r.patientId === patient?.id);
+  // 全部由單一事實來源以 patientId 取記錄；警報以 resident_id 外鍵關聯（非房號字串比對）
+  const daily = patient ? dailyHealth[patient.id] : undefined;
+  const checkup = patient ? checkups[patient.id] : undefined;
   const weeklyData = patient ? generateWeeklyTrend(patient.id) : [];
 
-  const patientAlerts = alerts.filter((a: any) => a.room?.includes(patient?.roomNumber));
+  const patientAlerts = patient
+    ? alerts
+        .filter(a => a.resident_id === patient.id)
+        .map(a => ({
+          type: a.event_type || '跌倒風險',
+          status: a.status,
+          time: new Date(a.detected_at).toLocaleString('zh-TW', { hour12: false }),
+        }))
+    : [];
 
   const handleSwitchPatient = () => {
     if (patients.length) setSelectedPatientIndex(prev => (prev + 1) % patients.length);
@@ -155,7 +157,7 @@ export function HealthReports() {
                 ))}
               </div>
             ) : (
-              <p className="text-sm text-slate-400 py-2 text-center">此房號無警報紀錄</p>
+              <p className="text-sm text-slate-400 py-2 text-center">此住民無警報紀錄</p>
             )}
           </div>
         </div>

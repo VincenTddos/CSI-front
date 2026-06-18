@@ -1,5 +1,6 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 import type { CareReportInput } from './geminiService';
+import { listAlerts } from './alertsService';
 
 // =============================================================================
 //  insightsService — 行為/作息分析、健康風險評分（資料來源：Supabase）
@@ -11,8 +12,27 @@ const sinceIso = (days: number) => new Date(Date.now() - days * DAY).toISOString
 
 interface ActRow { bucket_time: string; avg_score: number | null; max_score: number | null }
 
+// 模擬模式：以 residentId 為種子產生穩定的逐時活動（夜間低、日間高），讓熱力圖/行為旗標有資料
+function synthActivity(residentId: string | undefined, days: number): ActRow[] {
+  const seed = (residentId ?? 'all').split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+  const rows: ActRow[] = [];
+  const now = new Date();
+  for (let d = days - 1; d >= 0; d--) {
+    for (let h = 0; h < 24; h++) {
+      const t = new Date(now);
+      t.setDate(now.getDate() - d);
+      t.setHours(h, 0, 0, 0);
+      const dayShape = h >= 7 && h <= 21 ? 1 : 0.15;       // 作息：日間活躍、夜間靜止
+      const wave = Math.abs(Math.sin((seed + d * 24 + h) * 0.7));
+      const base = 8 + dayShape * 55 * wave;
+      rows.push({ bucket_time: t.toISOString(), avg_score: Math.round(base), max_score: Math.round(base + 10 + wave * 25) });
+    }
+  }
+  return rows;
+}
+
 async function fetchActivity(residentId?: string, days = 7): Promise<ActRow[]> {
-  if (!isSupabaseConfigured) return [];
+  if (!isSupabaseConfigured) return synthActivity(residentId, days);
   let q = supabase.from('activity_summaries')
     .select('bucket_time, avg_score, max_score, resident_id')
     .gte('bucket_time', sinceIso(days))
@@ -104,6 +124,13 @@ export async function getRiskAssessment(residentId?: string, days = 7): Promise<
     if (residentId) fq = fq.eq('resident_id', residentId);
     const { data } = await fq;
     confirmedFalls = (data ?? []).filter(f => f.status === 'confirmed').length;
+  } else {
+    // 模擬模式：由單一警報 store 統計確認跌倒
+    const since = sinceIso(days);
+    const alerts = await listAlerts(1000);
+    confirmedFalls = alerts.filter(a =>
+      a.status === 'confirmed' && a.detected_at >= since && (!residentId || a.resident_id === residentId),
+    ).length;
   }
   if (confirmedFalls > 0) { score += Math.min(40, confirmedFalls * 25); factors.push({ label: `本週 ${confirmedFalls} 次確認跌倒`, severity: 'bad' }); }
   else factors.push({ label: '本週無確認跌倒', severity: 'good' });
@@ -158,6 +185,13 @@ export async function buildCareReportInput(residentId: string | undefined, resid
     if (residentId) cq = cq.eq('resident_id', residentId);
     const { data: cr } = await cq;
     if (cr?.[0]) { weight = cr[0].weight ?? undefined; sugar = cr[0].blood_sugar ?? undefined; }
+  } else {
+    // 模擬模式：跌倒統計來自單一警報 store（健康數值由 AI 週報文字側略過）
+    const since = sinceIso(days);
+    const alerts = (await listAlerts(1000)).filter(a => a.detected_at >= since && (!residentId || a.resident_id === residentId));
+    fallTotal = alerts.length;
+    fallConfirmed = alerts.filter(a => a.status === 'confirmed').length;
+    fallFalse = alerts.filter(a => a.status === 'false_alarm').length;
   }
 
   const end = new Date();
