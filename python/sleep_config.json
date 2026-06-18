@@ -1,0 +1,31 @@
+{
+  "_comment": "睡眠品質 Lite 的全部可調門檻與權重。Python(sleep_quality.py) 與前端(sleepService.ts) 共用同一份，確保兩端數字一致。score 為 0-100 movement 分數。",
+
+  "bin_sec": 60,
+  "motion_score_threshold": 8.0,
+
+  "onset_quiet_motion_frac": 0.15,
+  "onset_persist_min": 20,
+
+  "awakening_score_threshold": 25.0,
+  "awakening_min_sec": 30,
+  "awakening_merge_gap_sec": 120,
+
+  "restless_energy_norm": 30.0,
+  "restless_w_time": 0.6,
+  "restless_w_energy": 0.4,
+
+  "ideal_sleep_min_lo": 420,
+  "ideal_sleep_min_hi": 540,
+  "efficiency_target": 0.85,
+  "awakening_penalty": 12,
+
+  "w_duration": 0.30,
+  "w_efficiency": 0.25,
+  "w_restlessness": 0.25,
+  "w_awakenings": 0.20,
+
+  "quality_labels": [[85, "優"], [70, "良"], [50, "普通"], [0, "差"]],
+
+  "min_record_min": 60
+}

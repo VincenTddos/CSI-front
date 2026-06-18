@@ -1,0 +1,42 @@
+{
+  "sleep_onset": "2026-01-01T22:04:00.000Z",
+  "wake_time": "2026-01-01T23:15:00.000Z",
+  "time_in_bed_min": 71.0,
+  "total_sleep_min": 66.03,
+  "restlessness_index": 0.0768,
+  "awakenings": 2,
+  "awakening_events": [
+    {
+      "start": "2026-01-01T22:26:00.000Z",
+      "end": "2026-01-01T22:28:59.000Z",
+      "peak_score": 62.49
+    },
+    {
+      "start": "2026-01-01T22:51:00.000Z",
+      "end": "2026-01-01T22:52:59.000Z",
+      "peak_score": 63.19
+    }
+  ],
+  "sleep_score": 68,
+  "score_breakdown": {
+    "duration": {
+      "weight": 0.3,
+      "sub": 15.72
+    },
+    "efficiency": {
+      "weight": 0.25,
+      "sub": 100.0
+    },
+    "restlessness": {
+      "weight": 0.25,
+      "sub": 92.32
+    },
+    "awakenings": {
+      "weight": 0.2,
+      "sub": 76.0
+    }
+  },
+  "quality_label": "普通",
+  "confidence": "ok",
+  "reason": null
+}

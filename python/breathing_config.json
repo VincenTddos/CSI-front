@@ -1,0 +1,24 @@
+{
+  "_comment": "呼吸率管線門檻。輸入為原始 per-subcarrier CSI 振幅（非 movement score）。呼吸帶 0.1-0.5 Hz = 6-30 BPM。",
+
+  "fs_default": 20.0,
+
+  "band_lo_hz": 0.1,
+  "band_hi_hz": 0.5,
+  "butter_order": 4,
+
+  "hampel_window": 7,
+  "hampel_n_sigma": 3.0,
+
+  "window_sec": 60,
+  "hop_sec": 10,
+  "min_window_sec": 30,
+
+  "top_subcarriers": 3,
+
+  "min_confidence": 0.5,
+  "min_method_agreement": 0.5,
+  "agreement_tol_bpm": 5.0,
+  "snr_db_floor": 4.0,
+  "snr_db_ceil": 16.0
+}

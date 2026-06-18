@@ -2,34 +2,19 @@ import React, { useState } from 'react';
 import { RefreshCcw, HeartPulse, ClipboardList, Pill } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { usePatients } from '../hooks/usePatients';
-
-const DAILY_STORAGE_KEY = 'csi_daily_health';
-const CHECKUP_STORAGE_KEY = 'csi_routine_checkup';
-
-function loadDailyRecords() {
-  const saved = localStorage.getItem(DAILY_STORAGE_KEY);
-  if (saved) { try { return JSON.parse(saved); } catch { /* ignore */ } }
-  return [];
-}
-
-function loadCheckupRecords() {
-  const saved = localStorage.getItem(CHECKUP_STORAGE_KEY);
-  if (saved) { try { return JSON.parse(saved); } catch { /* ignore */ } }
-  return [];
-}
+import { useData } from '../contexts/DataContext';
 
 export function FamilyHealthLog() {
   const { user } = useUser();
   const { patients, loading, error } = usePatients();
+  const { dailyHealth, checkups } = useData();
   const [currentPatientIndex, setCurrentPatientIndex] = useState(0);
 
   const patient = patients[currentPatientIndex];
 
-  const dailyRecords = loadDailyRecords();
-  const checkupRecords = loadCheckupRecords();
-
-  const dailyRecord = patient ? dailyRecords.find((r: any) => r.patientId === patient.id) : undefined;
-  const checkupRecord = patient ? checkupRecords.find((r: any) => r.patientId === patient.id) : undefined;
+  // 直接由單一事實來源以 patientId 取記錄（姓名/數值永遠與住民一致）
+  const dailyRecord = patient ? dailyHealth[patient.id] : undefined;
+  const checkupRecord = patient ? checkups[patient.id] : undefined;
 
   const handleSwitchPatient = () => {
     if (patients.length) setCurrentPatientIndex((prev) => (prev + 1) % patients.length);

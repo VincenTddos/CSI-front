@@ -2,34 +2,14 @@ import React, { useState } from 'react';
 import { Search, ChevronRight, Phone, X, Plus, ArrowLeft, Pencil, Save } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Patient } from '../types';
-import { isSupabaseConfigured } from '../lib/supabase';
-import { updateResident } from '../services/residentsService';
 import { usePatients } from '../hooks/usePatients';
-
-const STORAGE_KEY = 'csi_patients';
-
-function savePatients(patients: Patient[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(patients));
-}
-
-// Patient(編輯後) → residents 資料列 patch（房號不回寫，避免覆蓋 room_id）
-function patientToResidentPatch(p: Patient) {
-  return {
-    name: p.name,
-    gender: p.gender,
-    birth_date: p.birthDate ? p.birthDate.replace(/\//g, '-') : null,
-    contact_name: p.contactName,
-    contact_phone: p.contactPhone,
-    medications: p.medications,
-    medical_history: p.medicalHistory,
-    notes: p.notes,
-  };
-}
+import { useData } from '../contexts/DataContext';
 
 export function CareRecipients() {
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
   const [isEditing, setIsEditing] = useState(false);
-  const { patients, setPatients, loading, error, reload } = usePatients();
+  const { patients, loading, error, reload } = usePatients();
+  const { updateResident } = useData();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -46,21 +26,12 @@ export function CareRecipients() {
     setIsEditing(false);
   };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     if (!editData) return;
-    const updated = patients.map(p => p.id === editData.id ? editData : p);
-    setPatients(updated);
+    // 寫入單一事實來源；其他頁面（每日健康、報表、智慧分析…）即時同步
+    updateResident(editData.id, editData);
     setSelectedPatient(editData);
     setIsEditing(false);
-    try {
-      if (isSupabaseConfigured) {
-        await updateResident(editData.id, patientToResidentPatch(editData));
-      } else {
-        savePatients(updated);
-      }
-    } catch {
-      // 寫入失敗仍保留本機編輯（離線可用），UI 不中斷
-    }
     setShowSavedMsg(true);
     setTimeout(() => setShowSavedMsg(false), 2500);
   };

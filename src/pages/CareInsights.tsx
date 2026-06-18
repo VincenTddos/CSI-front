@@ -3,14 +3,14 @@ import {
   Brain, Activity, AlertTriangle, TrendingDown, TrendingUp, Minus,
   Moon, Sofa, Sparkles, ShieldAlert, Loader2,
 } from 'lucide-react';
-import { listResidents } from '../services/residentsService';
 import {
   getActivityHeatmap, getBehaviorFlags, getRiskAssessment,
   buildCareReportInput, type HeatRow, type BehaviorFlags, type RiskAssessment,
 } from '../services/insightsService';
 import { generateCareReport } from '../services/geminiService';
-import type { ResidentRow } from '../services/database.types';
 import { isSupabaseConfigured } from '../lib/supabase';
+import { useData } from '../contexts/DataContext';
+import { SleepReportCard } from '../components/SleepReportCard';
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
@@ -25,7 +25,7 @@ function heatColor(v: number): string {
 }
 
 export function CareInsights() {
-  const [residents, setResidents] = useState<ResidentRow[]>([]);
+  const { residents } = useData(); // 住民下拉與其他頁面共用同一份資料
   const [residentId, setResidentId] = useState<string>('');
   const [heat, setHeat] = useState<HeatRow[]>([]);
   const [flags, setFlags] = useState<BehaviorFlags | null>(null);
@@ -35,8 +35,6 @@ export function CareInsights() {
   const [report, setReport] = useState('');
   const [reporting, setReporting] = useState(false);
   const [reportErr, setReportErr] = useState('');
-
-  useEffect(() => { listResidents().then(setResidents).catch(() => {}); }, []);
 
   useEffect(() => {
     setLoading(true);
@@ -156,6 +154,9 @@ export function CareInsights() {
           </div>
         )}
       </div>
+
+      {/* 睡眠品質報告（上傳整夜 {ts, score} 錄製，瀏覽器端離線分析） */}
+      <SleepReportCard />
 
       {/* AI 照護週報 */}
       <div className="bg-white rounded-2xl border border-slate-100 p-5">

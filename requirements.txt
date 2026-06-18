@@ -8,3 +8,6 @@ websockets>=13.0
 
 # BLE 模式 (--ble) 才需要，預設 simulate / serial 模式可不裝：
 # bleak>=0.22
+
+# 測試（python -m pytest）：
+pytest>=8

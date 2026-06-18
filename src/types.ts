@@ -113,6 +113,28 @@ export interface RoutineCheckupRecord {
   stoolStatus: CheckupStatus;
 }
 
+// =============================================================================
+//  SSOT 正規化記錄型別 — DataContext 內以 patientId 為外鍵存放，姓名/房號一律
+//  由 residents 即時推導（不反正規化），確保參照完整性與資料一致性。
+// =============================================================================
+
+/** 每日健康量測（血壓 / 血氧）。以 patientId 對應，不含姓名。 */
+export interface DailyVitals {
+  bloodPressureSys: string;
+  bloodPressureDia: string;
+  bloodOxygen: string;
+  measureTime: string; // YYYY/MM/DD HH:mm
+}
+
+/** 日常檢查（體重 / 血糖 / 排泄）。以 patientId 對應，不含姓名。 */
+export interface CheckupVitals {
+  weight: string;
+  bloodSugar: string;
+  urineStatus: CheckupStatus;
+  stoolStatus: CheckupStatus;
+  measureDate: string; // YYYY/MM/DD
+}
+
 export type Page = 
   | 'login' 
   | 'register' 

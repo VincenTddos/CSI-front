@@ -1,53 +1,40 @@
 import React, { useState, useEffect } from 'react';
 import { Clock, Save, Check, X, TriangleAlert, CheckCircle2 } from 'lucide-react';
-import { CheckupStatus, Patient } from '../types';
+import { CheckupStatus, Patient, DailyVitals, CheckupVitals } from '../types';
 import { cn } from '../lib/utils';
-import { usePatients } from '../hooks/usePatients';
+import { useData } from '../contexts/DataContext';
 
-const DAILY_STORAGE_KEY = 'csi_daily_health';
-const CHECKUP_STORAGE_KEY = 'csi_routine_checkup';
+// ===== 顯示用列：姓名由住民即時推導，不隨記錄持久化（避免改名後資料不一致）=====
+interface DailyRecord extends DailyVitals { patientId: string; patientName: string; }
+interface CheckupRecord extends CheckupVitals { patientId: string; patientName: string; }
 
-// ===== Shared types =====
-interface DailyRecord {
-  patientId: string;
-  patientName: string;
-  bloodPressureSys: string;
-  bloodPressureDia: string;
-  bloodOxygen: string;
-  measureTime: string;
-}
-
-interface CheckupRecord {
-  patientId: string;
-  patientName: string;
-  weight: string;
-  bloodSugar: string;
-  urineStatus: CheckupStatus;
-  stoolStatus: CheckupStatus;
-  measureDate: string;
-}
-
-// ===== localStorage helpers (merge with current patient list) =====
-function buildDailyRecords(patients: Patient[]): DailyRecord[] {
-  const saved = localStorage.getItem(DAILY_STORAGE_KEY);
-  const existing: DailyRecord[] = saved ? (JSON.parse(saved) || []) : [];
-
-  // Ensure every patient has a record (handles newly added patients)
+// 由「住民清單 + 量測 map」組出每位住民一列（新住民自動帶空白列）
+function buildDailyRecords(patients: Patient[], map: Record<string, DailyVitals>): DailyRecord[] {
   return patients.map(p => {
-    const found = existing.find(r => r.patientId === p.id);
-    if (found) return { ...found, patientName: p.name }; // update name in case it changed
-    return { patientId: p.id, patientName: p.name, bloodPressureSys: '', bloodPressureDia: '', bloodOxygen: '', measureTime: '' };
+    const v = map[p.id];
+    return {
+      patientId: p.id,
+      patientName: p.name,
+      bloodPressureSys: v?.bloodPressureSys ?? '',
+      bloodPressureDia: v?.bloodPressureDia ?? '',
+      bloodOxygen: v?.bloodOxygen ?? '',
+      measureTime: v?.measureTime ?? '',
+    };
   });
 }
 
-function buildCheckupRecords(patients: Patient[]): CheckupRecord[] {
-  const saved = localStorage.getItem(CHECKUP_STORAGE_KEY);
-  const existing: CheckupRecord[] = saved ? (JSON.parse(saved) || []) : [];
-
+function buildCheckupRecords(patients: Patient[], map: Record<string, CheckupVitals>): CheckupRecord[] {
   return patients.map(p => {
-    const found = existing.find(r => r.patientId === p.id);
-    if (found) return { ...found, patientName: p.name };
-    return { patientId: p.id, patientName: p.name, weight: '', bloodSugar: '', urineStatus: '' as CheckupStatus, stoolStatus: '' as CheckupStatus, measureDate: '' };
+    const v = map[p.id];
+    return {
+      patientId: p.id,
+      patientName: p.name,
+      weight: v?.weight ?? '',
+      bloodSugar: v?.bloodSugar ?? '',
+      urineStatus: v?.urineStatus ?? ('' as CheckupStatus),
+      stoolStatus: v?.stoolStatus ?? ('' as CheckupStatus),
+      measureDate: v?.measureDate ?? '',
+    };
   });
 }
 
@@ -55,9 +42,9 @@ function buildCheckupRecords(patients: Patient[]): CheckupRecord[] {
 //  每日健康 (血壓、血氧)
 // =============================================
 export function DailyHealth() {
-  const { patients } = usePatients();
+  const { residents, dailyHealth, setManyDailyVitals } = useData();
   const [records, setRecords] = useState<DailyRecord[]>([]);
-  useEffect(() => { setRecords(buildDailyRecords(patients)); }, [patients]);
+  useEffect(() => { setRecords(buildDailyRecords(residents, dailyHealth)); }, [residents, dailyHealth]);
   const [showSavedMsg, setShowSavedMsg] = useState(false);
 
   const handleInputChange = (id: string, field: string, value: string) => {
@@ -73,7 +60,16 @@ export function DailyHealth() {
   };
 
   const handleSave = () => {
-    localStorage.setItem(DAILY_STORAGE_KEY, JSON.stringify(records));
+    const map: Record<string, DailyVitals> = {};
+    for (const r of records) {
+      map[r.patientId] = {
+        bloodPressureSys: r.bloodPressureSys,
+        bloodPressureDia: r.bloodPressureDia,
+        bloodOxygen: r.bloodOxygen,
+        measureTime: r.measureTime,
+      };
+    }
+    setManyDailyVitals(map); // 寫入單一事實來源 → 家屬健康日誌、報表即時同步
     setShowSavedMsg(true);
     setTimeout(() => setShowSavedMsg(false), 2500);
   };
@@ -170,9 +166,9 @@ export function DailyHealth() {
 //  日常檢查 (體重、血糖、尿液、糞便)
 // =============================================
 export function RoutineCheckup() {
-  const { patients } = usePatients();
+  const { residents, checkups, setManyCheckups } = useData();
   const [records, setRecords] = useState<CheckupRecord[]>([]);
-  useEffect(() => { setRecords(buildCheckupRecords(patients)); }, [patients]);
+  useEffect(() => { setRecords(buildCheckupRecords(residents, checkups)); }, [residents, checkups]);
   const [showSavedMsg, setShowSavedMsg] = useState(false);
 
   const handleInputChange = (id: string, field: string, value: string | CheckupStatus) => {
@@ -190,7 +186,17 @@ export function RoutineCheckup() {
   };
 
   const handleSave = () => {
-    localStorage.setItem(CHECKUP_STORAGE_KEY, JSON.stringify(records));
+    const map: Record<string, CheckupVitals> = {};
+    for (const r of records) {
+      map[r.patientId] = {
+        weight: r.weight,
+        bloodSugar: r.bloodSugar,
+        urineStatus: r.urineStatus,
+        stoolStatus: r.stoolStatus,
+        measureDate: r.measureDate,
+      };
+    }
+    setManyCheckups(map); // 寫入單一事實來源
     setShowSavedMsg(true);
     setTimeout(() => setShowSavedMsg(false), 2500);
   };
