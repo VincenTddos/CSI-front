@@ -13,6 +13,9 @@ export function Reveal({
 }) {
   const ref = useRef<HTMLElement | null>(null);
   const [shown, setShown] = useState(false);
+  // react-three-fiber 會把 three 元素併入 react 的 JSX 內建元素，使多型的
+  // React.ElementType 共同 props 退化為 never；此處 Tag 是任意 DOM 標籤，以 any 還原可渲染。
+  const Component: any = Tag;
 
   useEffect(() => {
     const el = ref.current;
@@ -28,7 +31,7 @@ export function Reveal({
   }, []);
 
   return (
-    <Tag
+    <Component
       ref={ref}
       className={className}
       style={{
@@ -38,6 +41,6 @@ export function Reveal({
       }}
     >
       {children}
-    </Tag>
+    </Component>
   );
 }

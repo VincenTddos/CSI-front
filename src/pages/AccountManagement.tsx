@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { UserCog, Plus, ShieldCheck, Crown, HeartPulse, Building2, Save, RefreshCw } from 'lucide-react';
+import { UserCog, Plus, ShieldCheck, Crown, HeartPulse, Building2, Save, RefreshCw, type LucideIcon } from 'lucide-react';
 import { useUser, type AccountInfo } from '../contexts/UserContext';
 import { UserRole } from '../types';
 import { roleLabel } from '../lib/roles';
 import { isSupabaseConfigured } from '../lib/supabase';
 
-const ROLE_OPTIONS: { id: UserRole; label: string; icon: React.ElementType; color: string }[] = [
+const ROLE_OPTIONS: { id: UserRole; label: string; icon: LucideIcon; color: string }[] = [
   { id: 'developer', label: '開發者', icon: Crown, color: 'text-purple-600' },
   { id: 'admin', label: '管理者', icon: ShieldCheck, color: 'text-red-500' },
   { id: 'medical', label: '醫護人員', icon: HeartPulse, color: 'text-blue-500' },

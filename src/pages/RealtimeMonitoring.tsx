@@ -29,7 +29,8 @@ import {
   LayoutGrid,
   Waves,
   Signal,
-  Radio
+  Radio,
+  Box
 } from 'lucide-react';
 import { useDeveloper } from '../contexts/DeveloperContext';
 import { useUser } from '../contexts/UserContext';
@@ -39,6 +40,8 @@ import { RoomGrid, RoomStatus } from '../components/RoomGrid';
 import { RoomDetailPanel } from '../components/RoomDetailPanel';
 import { usePatients } from '../hooks/usePatients';
 import { askGemini } from '../services/geminiService';
+import { IsometricRoom } from '../components/IsometricRoom';
+import { useRoomGeometry } from '../hooks/useRoomGeometry';
 
 // 波形圖的單一資料點：movement = 真實移動強度分數 (0–100)，
 // 來自 ESPectre 韌體把所有 CSI 子載波算完後輸出的 mvmt（非合成假資料）。
@@ -98,7 +101,7 @@ export function RealtimeMonitoring() {
   const [movementScore, setMovementScore] = useState(0);
   const [showLinkHelp, setShowLinkHelp] = useState(false);
   const [harActivity, setHarActivity] = useState<{ label: string; confidence: number; icon: string }>({ label: '待機', confidence: 0, icon: '⏸️' });
-  const [rightTab, setRightTab] = useState<'floorplan' | 'rooms'>('floorplan');
+  const [rightTab, setRightTab] = useState<'floorplan' | 'iso' | 'rooms'>('floorplan');
   const [selectedRoom, setSelectedRoom] = useState<RoomStatus | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
   const [holdSimulatedFallMarker, setHoldSimulatedFallMarker] = useState(false);
@@ -107,6 +110,12 @@ export function RealtimeMonitoring() {
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
   const { isConnected, dataStale, bridgeStatus, locationData } = useCSIWebSocket();
   const { patients } = usePatients();
+  // 房間幾何（單一事實來源）：2D 平面圖與 3D 立體圖共用同一份
+  const { geometry: roomGeometry } = useRoomGeometry();
+  // 立體圖人員座標：沿用 2D 同一條 CSI 定位資料（locationData），不另開連線；無定位則不畫
+  const isoPerson = (locationData.x !== null && locationData.y !== null)
+    ? { x: locationData.x, y: locationData.y }
+    : null;
 
   // isConnected = WebSocket 到 bridge 通了；isHardwareOnline = ESP32 板子實際有插著
   const isHardwareOnline = isConnected && bridgeStatus?.status === 'online';
@@ -863,6 +872,18 @@ export function RealtimeMonitoring() {
               平面圖
             </button>
             <button
+              onClick={() => { setRightTab('iso'); setSelectedRoom(null); }}
+              className={cn(
+                "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all",
+                rightTab === 'iso'
+                  ? "bg-white text-slate-800 shadow-sm"
+                  : "text-slate-500 hover:text-slate-700"
+              )}
+            >
+              <Box className="w-3.5 h-3.5" />
+              立體圖
+            </button>
+            <button
               onClick={() => { setRightTab('rooms'); setSelectedRoom(null); }}
               className={cn(
                 "flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition-all",
@@ -962,8 +983,9 @@ export function RealtimeMonitoring() {
 
                     {/* Wi-Fi Triangulation Person Location Dot */}
                     {locationData.x !== null && locationData.y !== null && (() => {
-                      const roomWidth = 6.0;
-                      const roomHeight = 5.0;
+                      // 房間尺寸改讀共用幾何（單一事實來源），2D 與 3D 一致
+                      const roomWidth = roomGeometry.width_m;
+                      const roomHeight = roomGeometry.height_m;
                       const pctX = Math.max(0, Math.min(100, (locationData.x / roomWidth) * 100));
                       const pctY = Math.max(0, Math.min(100, (locationData.y / roomHeight) * 100));
                       return (
@@ -1030,6 +1052,22 @@ export function RealtimeMonitoring() {
                       </div>
                     </div>
                   )}
+                </div>
+              </>
+            ) : rightTab === 'iso' ? (
+              /* ====== Isometric 3D View (NEW) — 幾何來自 roomGeometry（單一事實來源） ====== */
+              <>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                    <Box className="w-4 h-4 text-[#2C363F]" />
+                    區域立體圖
+                  </h2>
+                  <span className="text-[10px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{selectedArea}</span>
+                </div>
+                <div className="flex-1 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 relative overflow-hidden p-4 flex items-center justify-center">
+                  <div className="w-full aspect-square max-w-sm relative border-4 border-slate-300 rounded-lg bg-white shadow-inner overflow-hidden">
+                    <IsometricRoom geometry={roomGeometry} person={isoPerson} />
+                  </div>
                 </div>
               </>
             ) : (

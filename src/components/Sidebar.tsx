@@ -18,6 +18,7 @@ import {
   Building2,
   Crown,
   Sparkles,
+  type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { initialsAvatar } from '../lib/avatar';
@@ -27,7 +28,7 @@ import { canSeeAll } from '../lib/roles';
 
 import { useLocation, useNavigate } from 'react-router-dom';
 
-const ROLES: { id: UserRole; label: string; icon: React.ElementType; color: string; badge: string }[] = [
+const ROLES: { id: UserRole; label: string; icon: LucideIcon; color: string; badge: string }[] = [
   { id: 'developer', label: '開發者',   icon: Crown,       color: 'text-purple-400', badge: 'bg-purple-500/20 text-purple-300' },
   { id: 'medical',   label: '醫護人員', icon: HeartPulse,  color: 'text-blue-400',   badge: 'bg-blue-500/20 text-blue-400' },
   { id: 'family',    label: '家屬',     icon: Building2,   color: 'text-green-400',  badge: 'bg-green-500/20 text-green-400' },
