@@ -26,7 +26,7 @@ export interface BedGeometry {
   label?: string;
 }
 
-/** CSI 感測器標記。 */
+/** CSI 感測器標記（ESP32，做移動/跌倒偵測，實體貼牆安裝）。 */
 export interface SensorGeometry {
   id: string;
   /** 平面座標（公尺） */
@@ -34,6 +34,22 @@ export interface SensorGeometry {
   /** 離地高度（公尺），預設 1.8 */
   height_m?: number;
   label?: string;
+  /** 貼哪一面牆（決定 3D 掛牆方向）；未設＝立地桿 */
+  mountWall?: 'xMin' | 'xMax' | 'yMin' | 'yMax';
+}
+
+/**
+ * Wi-Fi 定位錨點（AP）。對應後端 WiFi_Location2.py 的 KNOWN_APS：
+ * 鍵＝SSID、值＝(x,y) 公尺。三角定位（多邊定位）數學上至少需 3 個錨點。
+ */
+export interface AnchorGeometry {
+  id: string;
+  /** 對應 KNOWN_APS 的 SSID */
+  ssid: string;
+  /** (x,y) 公尺，= KNOWN_APS 的座標值 */
+  position: Vec2m;
+  /** 安裝高度（公尺），預設 2.4 */
+  height_m?: number;
 }
 
 /** 機能區域（如浴室）：以左上角 + 尺寸描述，可選矮牆隔間。 */
@@ -59,6 +75,8 @@ export interface RoomGeometry {
   wallHeight_m: number;
   beds: BedGeometry[];
   sensors: SensorGeometry[];
+  /** Wi-Fi 定位錨點（AP），三角定位需 ≥3 個 */
+  anchors?: AnchorGeometry[];
   zones?: ZoneGeometry[];
 }
 
@@ -76,8 +94,15 @@ export const DEFAULT_ROOM_GEOMETRY: RoomGeometry = {
   beds: [
     { id: 'bed-1', center: { x: 4.75, y: 1.2 }, size: { w: 1.1, d: 2.0 }, label: '病床' },
   ],
+  // CSI 感測器：貼後牆（yMin）中央，離地 1.9m，面向室內
   sensors: [
-    { id: 'csi-1', center: { x: 3.0, y: 2.5 }, height_m: 1.8, label: 'CSI Sensor' },
+    { id: 'csi-1', center: { x: 3.0, y: 0.0 }, height_m: 1.9, label: 'CSI Sensor', mountWall: 'yMin' },
+  ],
+  // Wi-Fi 定位 AP（= KNOWN_APS 範例座標）：三點分布於房間周界
+  anchors: [
+    { id: 'ap-1', ssid: 'MyWiFi-2.4G', position: { x: 0.0, y: 0.0 }, height_m: 2.4 },
+    { id: 'ap-2', ssid: 'MyWiFi-5G', position: { x: 6.0, y: 0.0 }, height_m: 2.4 },
+    { id: 'ap-3', ssid: 'Office-AP', position: { x: 3.0, y: 5.0 }, height_m: 2.4 },
   ],
   zones: [
     { id: 'bath', origin: { x: 0, y: 0 }, size: { w: 2.2, d: 2.2 }, label: '浴室', partitionHeight_m: 1.2 },

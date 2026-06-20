@@ -11,6 +11,9 @@ import { DEFAULT_ROOM_GEOMETRY, type RoomGeometry } from '../lib/roomGeometry';
 
 const LS_KEY = 'csi_room_geometry';
 
+/** 幾何被儲存時派發的事件名稱；useRoomGeometry 監聽它即時重載 → 全頁同步 */
+export const ROOM_GEOMETRY_EVENT = 'csi:room-geometry-changed';
+
 function lsLoad(): RoomGeometry | null {
   try {
     const raw = localStorage.getItem(LS_KEY);
@@ -54,7 +57,8 @@ export async function getRoomGeometry(roomId?: string): Promise<RoomGeometry> {
   return base;
 }
 
-/** 儲存房間幾何（localStorage 單一來源；供未來幾何編輯器使用）。 */
+/** 儲存房間幾何（localStorage 單一來源）並通知全頁即時重載。 */
 export function saveRoomGeometry(g: RoomGeometry): void {
   lsSave(g);
+  window.dispatchEvent(new CustomEvent(ROOM_GEOMETRY_EVENT));
 }

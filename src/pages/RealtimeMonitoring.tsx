@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   LineChart,
   Line,
@@ -30,7 +30,9 @@ import {
   Waves,
   Signal,
   Radio,
-  Box
+  Box,
+  Maximize2,
+  Pencil
 } from 'lucide-react';
 import { useDeveloper } from '../contexts/DeveloperContext';
 import { useUser } from '../contexts/UserContext';
@@ -41,7 +43,10 @@ import { RoomDetailPanel } from '../components/RoomDetailPanel';
 import { usePatients } from '../hooks/usePatients';
 import { askGemini } from '../services/geminiService';
 import { IsometricRoom } from '../components/IsometricRoom';
+import { RoomViewerModal } from '../components/RoomViewerModal';
+import { RoomEditorModal } from '../components/RoomEditorModal';
 import { useRoomGeometry } from '../hooks/useRoomGeometry';
+import type { RoomGeometry } from '../lib/roomGeometry';
 
 // 波形圖的單一資料點：movement = 真實移動強度分數 (0–100)，
 // 來自 ESPectre 韌體把所有 CSI 子載波算完後輸出的 mvmt（非合成假資料）。
@@ -87,6 +92,101 @@ const generateSimulatedMovementScore = (
   return clampScore(base + walkingPulse + noise);
 };
 
+// ── 模擬模式：障礙感知的路徑行走（不穿牆、不穿床）──────────────────────────────
+// 座標皆為公尺，與 roomGeometry / 2D 平面圖同座標系（原點左上、x 右、y 下）。
+type Rect = { minX: number; minY: number; maxX: number; maxY: number };
+
+// 把房間幾何展開成「人員不可進入」的矩形：病床 + 有隔間矮牆的機能區域（如浴室）。
+// 全部往外膨脹 pad（人員半徑），確保人不會貼著床/牆穿過去。純地面標記（無隔間牆）不擋。
+function buildObstacles(g: RoomGeometry, pad: number): Rect[] {
+  const rects: Rect[] = [];
+  for (const b of g.beds) {
+    const r = (b.rotationDeg ?? 0) * (Math.PI / 180);
+    const c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r));
+    const hw = b.size.w / 2, hd = b.size.d / 2;
+    const ex = hw * c + hd * s + pad; // 旋轉後外接框半寬
+    const ey = hw * s + hd * c + pad; // 旋轉後外接框半高
+    rects.push({ minX: b.center.x - ex, maxX: b.center.x + ex, minY: b.center.y - ey, maxY: b.center.y + ey });
+  }
+  for (const z of g.zones ?? []) {
+    if ((z.partitionHeight_m ?? 0) > 0) {
+      rects.push({ minX: z.origin.x - pad, maxX: z.origin.x + z.size.w + pad, minY: z.origin.y - pad, maxY: z.origin.y + z.size.d + pad });
+    }
+  }
+  return rects;
+}
+
+const inAnyRect = (rects: Rect[], x: number, y: number) =>
+  rects.some(r => x >= r.minX && x <= r.maxX && y >= r.minY && y <= r.maxY);
+
+// 直線段是否完全避開所有障礙（取樣檢測；只在挑新目標時呼叫，非每幀）
+function segmentClear(rects: Rect[], ax: number, ay: number, bx: number, by: number): boolean {
+  const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 0.12));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    if (inAnyRect(rects, ax + (bx - ax) * t, ay + (by - ay) * t)) return false;
+  }
+  return true;
+}
+
+interface WalkerState { pos: { x: number; y: number }; target: { x: number; y: number }; dwell: number }
+
+const PERSON_RADIUS = 0.28; // 人員碰撞半徑（公尺）
+const WALK_STEP = 0.08;     // 每 100ms 位移（≈0.8 m/s，長者步速）
+
+// 房間可行走範圍內挑一個自由點（避開障礙與牆邊 margin）
+function pickFreePoint(g: RoomGeometry, rects: Rect[], margin: number): { x: number; y: number } {
+  for (let i = 0; i < 40; i++) {
+    const x = margin + Math.random() * (g.width_m - 2 * margin);
+    const y = margin + Math.random() * (g.height_m - 2 * margin);
+    if (!inAnyRect(rects, x, y)) return { x, y };
+  }
+  return { x: g.width_m / 2, y: g.height_m / 2 };
+}
+
+// 從目前位置挑「直線可達」的下一個目標（夠遠且整段路徑不穿障礙）
+function pickReachableTarget(g: RoomGeometry, rects: Rect[], margin: number, from: { x: number; y: number }) {
+  for (let i = 0; i < 40; i++) {
+    const p = pickFreePoint(g, rects, margin);
+    if (Math.hypot(p.x - from.x, p.y - from.y) > 0.8 && segmentClear(rects, from.x, from.y, p.x, p.y)) return p;
+  }
+  return pickFreePoint(g, rects, margin);
+}
+
+// 推進一步：朝目標直線前進，抵達就（可能原地駐足後）換下一個可達目標。
+function stepWalker(prev: WalkerState | null, g: RoomGeometry): WalkerState {
+  const margin = Math.max(PERSON_RADIUS, Math.min(0.6, g.width_m * 0.12, g.height_m * 0.12));
+  const rects = buildObstacles(g, PERSON_RADIUS);
+  if (!prev) {
+    const pos = pickFreePoint(g, rects, margin);
+    return { pos, target: pickReachableTarget(g, rects, margin, pos), dwell: 0 };
+  }
+  if (prev.dwell > 0) return { ...prev, dwell: prev.dwell - 1 };
+  const dx = prev.target.x - prev.pos.x, dy = prev.target.y - prev.pos.y;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= WALK_STEP) {
+    // 抵達目標：50% 機率原地停留 0.5–2.5 秒（像在床邊/窗邊駐足），再挑下一個目標
+    const dwell = Math.random() < 0.5 ? 5 + Math.floor(Math.random() * 20) : 0;
+    return { pos: prev.target, target: pickReachableTarget(g, rects, margin, prev.target), dwell };
+  }
+  return { pos: { x: prev.pos.x + (dx / dist) * WALK_STEP, y: prev.pos.y + (dy / dist) * WALK_STEP }, target: prev.target, dwell: 0 };
+}
+
+// 跌倒警報浮層（面板用）：紅色脈動內框 + 頂部橫幅。放在各檢視容器（relative）內。
+function FallAlarmBanner({ area }: { area: string }) {
+  return (
+    <>
+      <div className="absolute inset-0 z-20 pointer-events-none rounded-xl ring-4 ring-inset ring-red-500/70 animate-pulse" />
+      <div className="absolute top-2 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
+        <div className="flex items-center gap-1.5 bg-[#FF3B30] text-white text-xs font-extrabold tracking-wide px-3 py-1.5 rounded-lg shadow-[0_0_20px_rgba(255,59,48,0.55)] animate-pulse">
+          <AlertTriangle className="w-3.5 h-3.5" />
+          跌倒警報 · {area}
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function RealtimeMonitoring() {
   const { user } = useUser();
   const [data, setData] = useState<any[]>([]);
@@ -102,9 +202,16 @@ export function RealtimeMonitoring() {
   const [showLinkHelp, setShowLinkHelp] = useState(false);
   const [harActivity, setHarActivity] = useState<{ label: string; confidence: number; icon: string }>({ label: '待機', confidence: 0, icon: '⏸️' });
   const [rightTab, setRightTab] = useState<'floorplan' | 'iso' | 'rooms'>('floorplan');
+  // 全螢幕「點進去看」檢視器
+  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewerView, setViewerView] = useState<'2d' | '3d'>('3d');
+  // 空間編輯器（L1：上傳底圖 + 手動描繪幾何）
+  const [editorOpen, setEditorOpen] = useState(false);
   const [selectedRoom, setSelectedRoom] = useState<RoomStatus | null>(null);
   const [isSimulating, setIsSimulating] = useState(false);
   const [holdSimulatedFallMarker, setHoldSimulatedFallMarker] = useState(false);
+  // 模擬模式的虛擬人員座標（公尺）；無模擬時為 null。讓 2D 平面圖與 3D 立體圖在無硬體時也有人移動。
+  const [simLocation, setSimLocation] = useState<{ x: number; y: number } | null>(null);
   const { isDeveloperMode, manualState, sensitivity, waveformSmoothing } = useDeveloper();
 
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
@@ -112,16 +219,23 @@ export function RealtimeMonitoring() {
   const { patients } = usePatients();
   // 房間幾何（單一事實來源）：2D 平面圖與 3D 立體圖共用同一份
   const { geometry: roomGeometry } = useRoomGeometry();
-  // 立體圖人員座標：沿用 2D 同一條 CSI 定位資料（locationData），不另開連線；無定位則不畫
-  const isoPerson = (locationData.x !== null && locationData.y !== null)
-    ? { x: locationData.x, y: locationData.y }
-    : null;
 
   // isConnected = WebSocket 到 bridge 通了；isHardwareOnline = ESP32 板子實際有插著
   const isHardwareOnline = isConnected && bridgeStatus?.status === 'online';
   const isManualSimulation = isDeveloperMode && manualState !== null;
   const isSimulationActive = isSimulating || isManualSimulation;
   const isRealDataActive = isHardwareOnline && !isSimulationActive;
+
+  // 顯示用人員座標：實機時用 CSI 定位（locationData）；模擬時用虛擬遊走座標（simLocation）；皆無則無人。
+  // 2D 平面圖綠點與 3D 立體圖綠標共用這一份，確保兩視圖一致。
+  const displayLocation = isRealDataActive
+    ? { x: locationData.x, y: locationData.y }
+    : (simLocation ?? { x: null, y: null });
+  // useMemo 讓物件 identity 只在座標真的改變時變動 → 配合 React.memo 避免父層每次重繪都重建 3D 場景
+  const isoPerson = useMemo(
+    () => (displayLocation.x !== null && displayLocation.y !== null ? { x: displayLocation.x, y: displayLocation.y } : null),
+    [displayLocation.x, displayLocation.y],
+  );
 
   // CSI 連結品質（給照護人員判讀：良好 / 普通 / 偏弱）
   const csiLink = bridgeStatus?.csi_link ?? null;
@@ -135,6 +249,13 @@ export function RealtimeMonitoring() {
   const displayMovementRef = useRef(0);
   // 平滑強度（0~100）用 ref 讀取，調滑桿可即時生效又不會重置波形
   const smoothingRef = useRef(waveformSmoothing);
+  // 房間尺寸用 ref 讀取，讓模擬遊走在 setInterval 內取得最新幾何，又不必重啟 interval
+  const geometryRef = useRef(roomGeometry);
+  useEffect(() => { geometryRef.current = roomGeometry; }, [roomGeometry]);
+  // 模擬模式的行走器狀態（位置/目標/駐足）；關閉模擬時清為 null，下次重新初始化
+  const walkerRef = useRef<WalkerState | null>(null);
+  // 跌倒警報是否顯示中（含 3.5s hold）；模擬時用來「凍結」人員停在跌倒點，由 setInterval 讀取
+  const alarmHoldRef = useRef(false);
   useEffect(() => { smoothingRef.current = waveformSmoothing; }, [waveformSmoothing]);
   useEffect(() => { movementScoreRef.current = movementScore; }, [movementScore]);
   useEffect(() => { isFallRef.current = isFallDetected; }, [isFallDetected]);
@@ -224,7 +345,7 @@ export function RealtimeMonitoring() {
 資料來源：${dataSource}
 目前活動分類：${harActivity.label}（信心 ${harActivity.confidence}%）
 即時移動分數：${movementScore} / 100（近 2 秒平均 ${avgScore}、峰值 ${peakScore}）
-跌倒偵測：${isFallDetected ? '是（偵測到跌倒風險）' : '否'}${locationData?.x != null ? `\n相對位置：x=${locationData.x}, y=${locationData.y}` : ''}
+跌倒偵測：${isFallDetected ? '是（偵測到跌倒風險）' : '否'}${displayLocation.x != null ? `\n相對位置：x=${displayLocation.x.toFixed(1)}, y=${displayLocation.y!.toFixed(1)}` : ''}
 
 請用繁體中文，條列輸出三點：
 1. 目前狀態研判（依移動分數與活動分類，一句話）
@@ -257,9 +378,18 @@ export function RealtimeMonitoring() {
         const fallEvent = manualState === 'fall';
         const score = generateSimulatedMovementScore(time, fallEvent, sensitivity, manualState);
         updateActivitySnapshot(score, fallEvent);
+        // 開發者手動模式也讓圖上有人走動（避開床/牆）；跌倒警報期間原地不動，符合情境
+        if (fallEvent || alarmHoldRef.current) {
+          if (!walkerRef.current) walkerRef.current = stepWalker(null, geometryRef.current);
+        } else {
+          walkerRef.current = stepWalker(walkerRef.current, geometryRef.current);
+        }
+        setSimLocation(walkerRef.current.pos);
         target = score;
       } else if (isRealDataActive) {
         // 板子插著：目標值為真實 movement score（ESPectre 由 CSI 子載波算出的 mvmt）
+        walkerRef.current = null;
+        setSimLocation(null); // 用真實 CSI 定位，清掉模擬座標
         target = movementScoreRef.current;
       } else if (isSimulating) {
         // 手動開啟模擬模式
@@ -267,13 +397,22 @@ export function RealtimeMonitoring() {
         const fallEvent = time % threshold > (threshold - 20) && time % threshold < (threshold - 10);
         const score = generateSimulatedMovementScore(time, fallEvent, sensitivity, null);
         updateActivitySnapshot(score, fallEvent);
+        // 模擬人員在房間內走動（避開床/牆）；跌倒警報期間原地不動（停在跌倒點）
+        if (fallEvent || alarmHoldRef.current) {
+          if (!walkerRef.current) walkerRef.current = stepWalker(null, geometryRef.current);
+        } else {
+          walkerRef.current = stepWalker(walkerRef.current, geometryRef.current);
+        }
+        setSimLocation(walkerRef.current.pos);
         target = score;
       } else {
-        // 沒插板子、也沒開模擬 → 平線、無數據
+        // 沒插板子、也沒開模擬 → 平線、無數據、無人
         scoreHistoryRef.current = [];
         setMovementScore(0);
         setIsFallDetected(false);
         setHarActivity({ label: '待機', confidence: 0, icon: '⏸️' });
+        walkerRef.current = null;
+        setSimLocation(null);
         target = 0;
       }
 
@@ -343,6 +482,8 @@ export function RealtimeMonitoring() {
   const statusColor = isFallDetected ? 'text-[#FF3B30] bg-[#FF3B30]/10 border-[#FF3B30]/20' : 'text-[#007AFF] bg-[#007AFF]/10 border-[#007AFF]/20';
   const floorPlanFallVisible = isFallDetected || holdSimulatedFallMarker;
   const deviceState = isRealDataActive ? 'online' : isSimulationActive ? 'simulating' : isConnected ? 'standby' : 'offline';
+  // 同步給 setInterval 讀（凍結模擬人員停在跌倒點，整段警報期間不走動）
+  useEffect(() => { alarmHoldRef.current = floorPlanFallVisible; }, [floorPlanFallVisible]);
 
   const handleExport = (seconds: number) => {
     const pointsToExport = seconds * 10; // 10 points per second
@@ -907,10 +1048,27 @@ export function RealtimeMonitoring() {
                     <MapPin className="w-4 h-4 text-[#2C363F]" />
                     區域平面圖
                   </h2>
-                  <span className="text-[10px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{selectedArea}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{selectedArea}</span>
+                    <button
+                      onClick={() => setEditorOpen(true)}
+                      title="編輯空間"
+                      className="p-1 rounded-md text-slate-400 hover:text-[#007AFF] hover:bg-blue-50 transition-colors"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => { setViewerView('2d'); setViewerOpen(true); }}
+                      title="全螢幕檢視"
+                      className="p-1 rounded-md text-slate-400 hover:text-[#007AFF] hover:bg-blue-50 transition-colors"
+                    >
+                      <Maximize2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex-1 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 relative overflow-hidden p-4 flex items-center justify-center">
+                  {floorPlanFallVisible && <FallAlarmBanner area={selectedArea} />}
                   {/* Minimalist Floor Plan SVG Representation */}
                   <div className="w-full aspect-square max-w-sm relative border-4 border-slate-300 rounded-lg bg-white shadow-inner">
                     {selectedArea === '公共區域' ? (
@@ -981,34 +1139,52 @@ export function RealtimeMonitoring() {
                       <span className="text-[8px] font-bold text-[#007AFF] uppercase tracking-tighter">CSI Sensor</span>
                     </div>
 
-                    {/* Wi-Fi Triangulation Person Location Dot */}
-                    {locationData.x !== null && locationData.y !== null && (() => {
+                    {/* Wi-Fi Triangulation Person Location Dot（實機定位或模擬遊走皆走 displayLocation） */}
+                    {displayLocation.x !== null && displayLocation.y !== null && (() => {
                       // 房間尺寸改讀共用幾何（單一事實來源），2D 與 3D 一致
                       const roomWidth = roomGeometry.width_m;
                       const roomHeight = roomGeometry.height_m;
-                      const pctX = Math.max(0, Math.min(100, (locationData.x / roomWidth) * 100));
-                      const pctY = Math.max(0, Math.min(100, (locationData.y / roomHeight) * 100));
+                      const pctX = Math.max(0, Math.min(100, (displayLocation.x / roomWidth) * 100));
+                      const pctY = Math.max(0, Math.min(100, (displayLocation.y / roomHeight) * 100));
+                      // 跌倒時：人點本身轉紅 + 放大爆出衝擊波，定位就在「人實際所在」更直覺
                       return (
                         <div
-                          className="absolute z-10 transition-all duration-1000 ease-in-out"
+                          className={cn("absolute transition-all duration-1000 ease-in-out", floorPlanFallVisible ? "z-30" : "z-10")}
                           style={{ left: `${pctX}%`, top: `${pctY}%`, transform: 'translate(-50%, -50%)' }}
                         >
-                          <div className="w-5 h-5 bg-[#34C759] rounded-full border-2 border-white shadow-lg relative z-10 flex items-center justify-center">
-                            <User className="w-2.5 h-2.5 text-white" />
-                          </div>
-                          <div className="absolute inset-[-4px] bg-[#34C759]/30 rounded-full animate-ping" />
-                          <div className="absolute inset-[-8px] bg-[#34C759]/10 rounded-full animate-pulse" />
-                          <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap">
-                            <span className="text-[7px] font-mono font-bold text-[#34C759] bg-white/80 px-1 rounded">
-                              ({locationData.x?.toFixed(1)}, {locationData.y?.toFixed(1)})
-                            </span>
-                          </div>
+                          {floorPlanFallVisible ? (
+                            <>
+                              <div className="w-7 h-7 bg-[#FF3B30] rounded-full border-2 border-white shadow-[0_0_16px_rgba(255,59,48,0.7)] relative z-10 flex items-center justify-center">
+                                <AlertTriangle className="w-3.5 h-3.5 text-white" />
+                              </div>
+                              <div className="absolute inset-[-6px] bg-[#FF3B30]/40 rounded-full animate-ping" />
+                              <div className="absolute inset-[-14px] bg-[#FF3B30]/20 rounded-full animate-pulse" />
+                              <div className="absolute -bottom-6 left-1/2 -translate-x-1/2 whitespace-nowrap">
+                                <span className="text-[8px] font-extrabold text-white bg-[#FF3B30] px-1.5 py-0.5 rounded shadow animate-pulse">
+                                  ⚠ 跌倒
+                                </span>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="w-5 h-5 bg-[#34C759] rounded-full border-2 border-white shadow-lg relative z-10 flex items-center justify-center">
+                                <User className="w-2.5 h-2.5 text-white" />
+                              </div>
+                              <div className="absolute inset-[-4px] bg-[#34C759]/30 rounded-full animate-ping" />
+                              <div className="absolute inset-[-8px] bg-[#34C759]/10 rounded-full animate-pulse" />
+                              <div className="absolute -bottom-5 left-1/2 -translate-x-1/2 whitespace-nowrap">
+                                <span className="text-[7px] font-mono font-bold text-[#34C759] bg-white/80 px-1 rounded">
+                                  ({displayLocation.x?.toFixed(1)}, {displayLocation.y?.toFixed(1)})
+                                </span>
+                              </div>
+                            </>
+                          )}
                         </div>
                       );
                     })()}
 
-                    {/* Dynamic Fall Marker */}
-                    {floorPlanFallVisible && (
+                    {/* Dynamic Fall Marker — 後備：無人員定位時才用固定位置（有定位時改由上面的人點轉紅呈現） */}
+                    {floorPlanFallVisible && displayLocation.x === null && (
                       <div className={cn(
                         "absolute z-20 pointer-events-none",
                         selectedArea === '公共區域' ? "top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" :
@@ -1062,11 +1238,29 @@ export function RealtimeMonitoring() {
                     <Box className="w-4 h-4 text-[#2C363F]" />
                     區域立體圖
                   </h2>
-                  <span className="text-[10px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{selectedArea}</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{selectedArea}</span>
+                    <button
+                      onClick={() => setEditorOpen(true)}
+                      title="編輯空間"
+                      className="p-1 rounded-md text-slate-400 hover:text-[#007AFF] hover:bg-blue-50 transition-colors"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => { setViewerView('3d'); setViewerOpen(true); }}
+                      title="全螢幕檢視"
+                      className="p-1 rounded-md text-slate-400 hover:text-[#007AFF] hover:bg-blue-50 transition-colors"
+                    >
+                      <Maximize2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
                 <div className="flex-1 bg-slate-50 rounded-xl border-2 border-dashed border-slate-200 relative overflow-hidden p-4 flex items-center justify-center">
+                  {floorPlanFallVisible && <FallAlarmBanner area={selectedArea} />}
                   <div className="w-full aspect-square max-w-sm relative border-4 border-slate-300 rounded-lg bg-white shadow-inner overflow-hidden">
-                    <IsometricRoom geometry={roomGeometry} person={isoPerson} />
+                    {/* 全螢幕檢視器/編輯器開啟時卸載小面板畫布，避免兩個 Canvas 同時跑、且其 Html 標籤外溢 */}
+                    {!viewerOpen && !editorOpen && <IsometricRoom geometry={roomGeometry} person={isoPerson} alert={floorPlanFallVisible} />}
                   </div>
                 </div>
               </>
@@ -1098,6 +1292,23 @@ export function RealtimeMonitoring() {
         </div>
 
       </div>
+
+      <RoomViewerModal
+        open={viewerOpen}
+        onClose={() => setViewerOpen(false)}
+        geometry={roomGeometry}
+        person={isoPerson}
+        alert={floorPlanFallVisible}
+        areaLabel={selectedArea}
+        view={viewerView}
+        onViewChange={setViewerView}
+      />
+
+      <RoomEditorModal
+        open={editorOpen}
+        onClose={() => setEditorOpen(false)}
+        initial={roomGeometry}
+      />
     </div>
   );
 }
