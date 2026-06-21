@@ -1,24 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { MonitorSmartphone, Wifi, RefreshCw, Settings2, CheckCircle2, AlertCircle, Radio, Signal, Info, MapPin, Ruler, ShieldCheck, Activity, Zap } from 'lucide-react';
+import { MonitorSmartphone, Wifi, WifiOff, RefreshCw, Settings2, CheckCircle2, AlertCircle, Radio, Signal, Info, MapPin, Ruler, ShieldCheck, Activity, Zap } from 'lucide-react';
 import { cn } from '../lib/utils';
-
-interface DeviceNode {
-  name: string;
-  room: string;
-  status: 'online' | 'offline';
-  signal: number;
-  cv: number;          // Coefficient of Variation
-  baselineNoise: number;
-  packetsPerSec: number;
-}
-
-const mockDevices: DeviceNode[] = [
-  { name: 'CSI-Node-502', room: '502 號房', status: 'online', signal: -42, cv: 0.05, baselineNoise: 0.0012, packetsPerSec: 98 },
-  { name: 'CSI-Node-503', room: '503 號房', status: 'online', signal: -48, cv: 0.08, baselineNoise: 0.0018, packetsPerSec: 95 },
-  { name: 'CSI-Node-606', room: '606 號房', status: 'online', signal: -55, cv: 0.12, baselineNoise: 0.003, packetsPerSec: 88 },
-  { name: 'CSI-Node-5F-Common', room: '5F 交誼廳', status: 'online', signal: -38, cv: 0.04, baselineNoise: 0.0008, packetsPerSec: 100 },
-  { name: 'CSI-Node-609', room: '609 號房', status: 'offline', signal: -90, cv: 0, baselineNoise: 0, packetsPerSec: 0 },
-];
+import { DEMO_DEVICES, isDeviceOffline, getOfflineDevices } from '../lib/demoDevices';
 
 type CalibPhase = 'idle' | 'gain_lock' | 'band_calibration' | 'done';
 
@@ -82,6 +65,28 @@ export function DeviceManagement() {
         </div>
       </div>
 
+      {/* 離線告警橫幅：任一裝置心跳逾期（last_seen_at 超過門檻分鐘）即提示 */}
+      {(() => {
+        const offline = getOfflineDevices();
+        if (offline.length === 0) return null;
+        return (
+          <div className="rounded-xl border border-red-200 bg-red-50 p-4">
+            <div className="flex items-center gap-2 mb-1.5">
+              <WifiOff className="w-4 h-4 text-red-500" />
+              <h3 className="text-sm font-bold text-red-700">{offline.length} 台感測器離線，該區域暫時無法偵測</h3>
+            </div>
+            <ul className="ml-6 space-y-0.5">
+              {offline.map((d) => (
+                <li key={d.name} className="text-xs text-red-600">
+                  • <span className="font-medium">{d.room}</span>（{d.name}）— 最後上線 {d.lastSeenMin} 分鐘前
+                  {d.status === 'online' && <span className="ml-1 text-red-400">· 心跳逾時</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })()}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
 
         {/* ===== 感測器列表 + CSI 品質 ===== */}
@@ -91,20 +96,28 @@ export function DeviceManagement() {
           </h2>
 
           <div className="space-y-3">
-            {mockDevices.map((device, i) => {
-              const quality = getQuality(device.cv, device.packetsPerSec);
+            {DEMO_DEVICES.map((device, i) => {
+              const offline = isDeviceOffline(device);
+              const quality = offline ? { label: '離線', color: 'text-slate-400 bg-slate-100' } : getQuality(device.cv, device.packetsPerSec);
               return (
-                <div key={i} className="bg-slate-50 rounded-lg p-4 border border-slate-100">
+                <div key={i} className={cn("rounded-lg p-4 border", offline ? "bg-red-50/40 border-red-100" : "bg-slate-50 border-slate-100")}>
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-3">
                       <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0",
-                        device.status === 'online' ? "bg-green-50" : "bg-slate-200"
+                        offline ? "bg-red-100" : "bg-green-50"
                       )}>
-                        <Wifi className={cn("w-4 h-4", device.status === 'online' ? "text-green-500" : "text-slate-400")} />
+                        {offline
+                          ? <WifiOff className="w-4 h-4 text-red-500" />
+                          : <Wifi className="w-4 h-4 text-green-500" />}
                       </div>
                       <div>
                         <h3 className="font-bold text-slate-800 text-sm">{device.name}</h3>
-                        <p className="text-[10px] text-slate-500">{device.room}</p>
+                        <p className="text-[10px] text-slate-500">
+                          {device.room}
+                          <span className={cn("ml-1.5", offline ? "text-red-500 font-medium" : "text-slate-400")}>
+                            · 最後上線 {device.lastSeenMin} 分鐘前
+                          </span>
+                        </p>
                       </div>
                     </div>
                     <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full", quality.color)}>
@@ -112,7 +125,7 @@ export function DeviceManagement() {
                     </span>
                   </div>
 
-                  {device.status === 'online' && (
+                  {!offline && (
                     <div className="grid grid-cols-4 gap-2 text-center">
                       <div>
                         <p className="text-[9px] text-slate-400 uppercase">RSSI</p>

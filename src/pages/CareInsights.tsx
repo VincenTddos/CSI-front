@@ -11,6 +11,7 @@ import { generateCareReport } from '../services/geminiService';
 import { isSupabaseConfigured } from '../lib/supabase';
 import { useData } from '../contexts/DataContext';
 import { SleepReportCard } from '../components/SleepReportCard';
+import { RiskRanking } from '../components/RiskRanking';
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
 
@@ -88,6 +89,9 @@ export function CareInsights() {
           尚未連接 Supabase，分析資料為空。連接雲端並累積活動資料後即會顯示。
         </div>
       )}
+
+      {/* 全體住民跌倒風險排行（規則式，接 seedAlerts，無雲端也可運作） */}
+      <RiskRanking residents={residents} />
 
       {/* 風險評分 + 行為旗標 */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">

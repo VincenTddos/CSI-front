@@ -2,10 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { BellRing, Check, X, Clock, AlertTriangle, MessageSquare, Filter, Plus, Trash2 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { useUser } from '../contexts/UserContext';
+import { useData } from '../contexts/DataContext';
 import {
   listAlerts, createAlert, updateAlertStatus, deleteAlert, subscribeNewAlerts,
 } from '../services/alertsService';
 import type { FallEventRow } from '../services/database.types';
+import { FeedbackSensitivity } from '../components/FeedbackSensitivity';
 
 // ===== Types（顯示用）=====
 interface AlertRecord {
@@ -40,11 +42,14 @@ type FilterType = 'all' | 'pending' | 'confirmed' | 'false_alarm';
 
 export function AlertNotifications() {
   const { user } = useUser();
+  const { residents } = useData();
   const [alerts, setAlerts] = useState<AlertRecord[]>([]);
   const [filterStatus, setFilterStatus] = useState<FilterType>('all');
   const [showSavedMsg, setShowSavedMsg] = useState(false);
   const [showAddModal, setShowAddModal] = useState(false);
   const [newAlert, setNewAlert] = useState({ room: '', type: '跌倒風險', confidence: '80%' });
+  // 每次標記/新增/刪除後 +1 → 觸發回饋建議面板重新計算（讀同一份 localStorage/雲端）
+  const [feedbackKey, setFeedbackKey] = useState(0);
 
   // 載入 + 即時訂閱新警報
   useEffect(() => {
@@ -68,6 +73,7 @@ export function AlertNotifications() {
   const handleDelete = async (id: string) => {
     await deleteAlert(id);
     setAlerts(prev => prev.filter(a => a.id !== id));
+    setFeedbackKey(k => k + 1);
   };
 
   const handleAddAlert = async () => {
@@ -86,6 +92,7 @@ export function AlertNotifications() {
 
   const flash = () => {
     setShowSavedMsg(true);
+    setFeedbackKey(k => k + 1);
     setTimeout(() => setShowSavedMsg(false), 2000);
   };
 
@@ -174,6 +181,9 @@ export function AlertNotifications() {
           }
         </p>
       </div>
+
+      {/* 誤報回饋閉環：各房間誤報率 → 靈敏度調整建議 */}
+      <FeedbackSensitivity residents={residents} refreshKey={feedbackKey} />
 
       {/* 篩選列 */}
       <div className="flex items-center gap-2">

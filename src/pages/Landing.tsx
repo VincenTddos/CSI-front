@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Activity, ShieldCheck, MapPin, BellRing, BarChart3, Wifi, Camera, Mic, Watch,
   ArrowRight, Cpu, HeartPulse, Lock, Users, Building2, Stethoscope, Clock,
-  AlertTriangle, CheckCircle2, Phone, Network, Database, ClipboardList,
+  AlertTriangle, CheckCircle2, Phone, Network, Database, ClipboardList, Box,
 } from 'lucide-react';
 import { useUser } from '../contexts/UserContext';
 import { CsiScene } from '../components/landing/CsiScene';
@@ -13,6 +13,7 @@ import { LiveSignal } from '../components/landing/LiveSignal';
 import { ActivityDemo } from '../components/landing/ActivityDemo';
 import { ZoneMap } from '../components/landing/ZoneMap';
 import { EscalationDemo } from '../components/landing/EscalationDemo';
+import RoomShowcase from '../components/landing/RoomShowcase';
 
 export function Landing() {
   const navigate = useNavigate();
@@ -198,6 +199,43 @@ export function Landing() {
                   偵測到跌倒後，系統立即推播護理站。若 30 秒內無人確認，警報自動升級轉通知家屬，
                   層層接力直到有人回應，確保緊急狀況不漏接、不延誤。
                 </p>
+              </div>
+            </Reveal>
+          </div>
+        </div>
+      </section>
+
+      {/* 立體呈現：互動 3D 房間 */}
+      <section className="bg-gradient-to-b from-[#EEF4FB] to-white py-20">
+        <div className="max-w-6xl mx-auto px-6">
+          <Reveal className="text-center mb-12">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 border border-blue-100 text-xs font-medium text-[#007AFF] mb-4">
+              <Box className="w-3.5 h-3.5" /> 區域立體圖
+            </div>
+            <h2 className="text-3xl font-bold text-slate-900">立體呈現，看見房間裡的此刻</h2>
+            <p className="text-slate-500 mt-3">由房間幾何與定位即時渲染——無攝影機影像，隱私零負擔</p>
+          </Reveal>
+          <div className="grid lg:grid-cols-2 gap-8 lg:gap-14 items-center">
+            <Reveal><RoomShowcase /></Reveal>
+            <Reveal delay={120}>
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">可旋轉、可縮放的即時 3D 視圖</h3>
+                <p className="text-slate-600 mt-3 leading-relaxed">
+                  把房間的病床、感測器與受測者位置，立體呈現在同一個畫面裡。畫面完全由
+                  房間幾何設定與 Wi-Fi 定位即時渲染，<strong className="text-slate-700">沒有任何攝影機影像</strong>，
+                  護理人員一眼就能掌握「人現在在哪、正在做什麼」。
+                </p>
+                <ul className="mt-5 space-y-2.5">
+                  {[
+                    '滑鼠拖曳即可環繞旋轉、滾輪縮放，自由查看每個角落',
+                    '受測者位置即時更新；偵測到跌倒時，標記自動轉為紅色警報',
+                    '2D 平面圖與 3D 立體圖共用同一份房間幾何，可自行描繪佈局',
+                  ].map((t) => (
+                    <li key={t} className="flex items-start gap-2 text-sm text-slate-600">
+                      <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0 mt-0.5" /> {t}
+                    </li>
+                  ))}
+                </ul>
               </div>
             </Reveal>
           </div>

@@ -32,7 +32,10 @@ import {
   Radio,
   Box,
   Maximize2,
-  Pencil
+  Pencil,
+  Route,
+  Flame,
+  History
 } from 'lucide-react';
 import { useDeveloper } from '../contexts/DeveloperContext';
 import { useUser } from '../contexts/UserContext';
@@ -45,8 +48,11 @@ import { askGemini } from '../services/geminiService';
 import { IsometricRoom } from '../components/IsometricRoom';
 import { RoomViewerModal } from '../components/RoomViewerModal';
 import { RoomEditorModal } from '../components/RoomEditorModal';
+import { FallReplayModal } from '../components/FallReplayModal';
 import { useRoomGeometry } from '../hooks/useRoomGeometry';
-import type { RoomGeometry } from '../lib/roomGeometry';
+import { useTrackHistory } from '../hooks/useTrackHistory';
+import { generateSimulatedMovementScore, stepWalker, type WalkerState } from '../lib/simWalker';
+import { HEAT_GX, HEAT_GY, heatCellColor } from '../lib/trackingViz';
 
 // 波形圖的單一資料點：movement = 真實移動強度分數 (0–100)，
 // 來自 ESPectre 韌體把所有 CSI 子載波算完後輸出的 mvmt（非合成假資料）。
@@ -55,8 +61,6 @@ type WaveformPoint = {
   movement: number;
   ts?: number; // 真實建立時間（epoch ms），供匯出真實時間戳；圖表仍用 time 流水號當 x 軸
 };
-
-const clampScore = (score: number) => Math.min(100, Math.max(0, Math.round(score)));
 
 // CSI 連結品質分級（給照護人員判讀，不需懂技術名詞）
 type LinkTone = 'good' | 'warn' | 'bad';
@@ -72,105 +76,7 @@ const pktQuality = (n: number): { word: string; tone: LinkTone } =>
 const rssiQuality = (n: number): { word: string; tone: LinkTone } =>
   n >= -60 ? { word: '良好', tone: 'good' } : n >= -75 ? { word: '普通', tone: 'warn' } : { word: '偏弱', tone: 'bad' };
 
-const generateSimulatedMovementScore = (
-  time: number,
-  isFall: boolean,
-  sensitivity: number,
-  manualState: 'safe' | 'fall' | null
-) => {
-  if (isFall) {
-    return clampScore(88 + Math.sin(time / 2) * 5 + Math.random() * 7);
-  }
-
-  if (manualState === 'safe') {
-    return clampScore(8 + Math.sin(time / 12) * 4 + Math.random() * 6);
-  }
-
-  const base = 12 + sensitivity * 18;
-  const walkingPulse = Math.max(0, Math.sin(time / 8)) * (18 + sensitivity * 16);
-  const noise = (Math.random() - 0.5) * (10 + sensitivity * 14);
-  return clampScore(base + walkingPulse + noise);
-};
-
-// ── 模擬模式：障礙感知的路徑行走（不穿牆、不穿床）──────────────────────────────
-// 座標皆為公尺，與 roomGeometry / 2D 平面圖同座標系（原點左上、x 右、y 下）。
-type Rect = { minX: number; minY: number; maxX: number; maxY: number };
-
-// 把房間幾何展開成「人員不可進入」的矩形：病床 + 有隔間矮牆的機能區域（如浴室）。
-// 全部往外膨脹 pad（人員半徑），確保人不會貼著床/牆穿過去。純地面標記（無隔間牆）不擋。
-function buildObstacles(g: RoomGeometry, pad: number): Rect[] {
-  const rects: Rect[] = [];
-  for (const b of g.beds) {
-    const r = (b.rotationDeg ?? 0) * (Math.PI / 180);
-    const c = Math.abs(Math.cos(r)), s = Math.abs(Math.sin(r));
-    const hw = b.size.w / 2, hd = b.size.d / 2;
-    const ex = hw * c + hd * s + pad; // 旋轉後外接框半寬
-    const ey = hw * s + hd * c + pad; // 旋轉後外接框半高
-    rects.push({ minX: b.center.x - ex, maxX: b.center.x + ex, minY: b.center.y - ey, maxY: b.center.y + ey });
-  }
-  for (const z of g.zones ?? []) {
-    if ((z.partitionHeight_m ?? 0) > 0) {
-      rects.push({ minX: z.origin.x - pad, maxX: z.origin.x + z.size.w + pad, minY: z.origin.y - pad, maxY: z.origin.y + z.size.d + pad });
-    }
-  }
-  return rects;
-}
-
-const inAnyRect = (rects: Rect[], x: number, y: number) =>
-  rects.some(r => x >= r.minX && x <= r.maxX && y >= r.minY && y <= r.maxY);
-
-// 直線段是否完全避開所有障礙（取樣檢測；只在挑新目標時呼叫，非每幀）
-function segmentClear(rects: Rect[], ax: number, ay: number, bx: number, by: number): boolean {
-  const steps = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 0.12));
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    if (inAnyRect(rects, ax + (bx - ax) * t, ay + (by - ay) * t)) return false;
-  }
-  return true;
-}
-
-interface WalkerState { pos: { x: number; y: number }; target: { x: number; y: number }; dwell: number }
-
-const PERSON_RADIUS = 0.28; // 人員碰撞半徑（公尺）
-const WALK_STEP = 0.08;     // 每 100ms 位移（≈0.8 m/s，長者步速）
-
-// 房間可行走範圍內挑一個自由點（避開障礙與牆邊 margin）
-function pickFreePoint(g: RoomGeometry, rects: Rect[], margin: number): { x: number; y: number } {
-  for (let i = 0; i < 40; i++) {
-    const x = margin + Math.random() * (g.width_m - 2 * margin);
-    const y = margin + Math.random() * (g.height_m - 2 * margin);
-    if (!inAnyRect(rects, x, y)) return { x, y };
-  }
-  return { x: g.width_m / 2, y: g.height_m / 2 };
-}
-
-// 從目前位置挑「直線可達」的下一個目標（夠遠且整段路徑不穿障礙）
-function pickReachableTarget(g: RoomGeometry, rects: Rect[], margin: number, from: { x: number; y: number }) {
-  for (let i = 0; i < 40; i++) {
-    const p = pickFreePoint(g, rects, margin);
-    if (Math.hypot(p.x - from.x, p.y - from.y) > 0.8 && segmentClear(rects, from.x, from.y, p.x, p.y)) return p;
-  }
-  return pickFreePoint(g, rects, margin);
-}
-
-// 推進一步：朝目標直線前進，抵達就（可能原地駐足後）換下一個可達目標。
-function stepWalker(prev: WalkerState | null, g: RoomGeometry): WalkerState {
-  const margin = Math.max(PERSON_RADIUS, Math.min(0.6, g.width_m * 0.12, g.height_m * 0.12));
-  const rects = buildObstacles(g, PERSON_RADIUS);
-  if (!prev) {
-    const pos = pickFreePoint(g, rects, margin);
-    return { pos, target: pickReachableTarget(g, rects, margin, pos), dwell: 0 };
-  }
-  if (prev.dwell > 0) return { ...prev, dwell: prev.dwell - 1 };
-  const dx = prev.target.x - prev.pos.x, dy = prev.target.y - prev.pos.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist <= WALK_STEP) {
-    // 抵達目標：50% 機率原地停留 0.5–2.5 秒（像在床邊/窗邊駐足），再挑下一個目標
-    const dwell = Math.random() < 0.5 ? 5 + Math.floor(Math.random() * 20) : 0;
-    return { pos: prev.target, target: pickReachableTarget(g, rects, margin, prev.target), dwell };
-  }
-  return { pos: { x: prev.pos.x + (dx / dist) * WALK_STEP, y: prev.pos.y + (dy / dist) * WALK_STEP }, target: prev.target, dwell: 0 };
-}
+// 模擬移動分數生成與障礙感知行走器（不穿牆/床）已抽至 ../lib/simWalker（含單元測試）
 
 // 跌倒警報浮層（面板用）：紅色脈動內框 + 頂部橫幅。放在各檢視容器（relative）內。
 function FallAlarmBanner({ area }: { area: string }) {
@@ -189,13 +95,13 @@ function FallAlarmBanner({ area }: { area: string }) {
 
 export function RealtimeMonitoring() {
   const { user } = useUser();
-  const [data, setData] = useState<any[]>([]);
+  const [data, setData] = useState<WaveformPoint[]>([]);
   const [isFallDetected, setIsFallDetected] = useState(false);
   const [showAiPopup, setShowAiPopup] = useState(false);
   const [selectedArea, setSelectedArea] = useState(user?.role === 'family' ? `${user.patientName} 的房間` : '204 號房');
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingResult, setThinkingResult] = useState<string | null>(null);
-  const [fullHistory, setFullHistory] = useState<any[]>([]);
+  const [fullHistory, setFullHistory] = useState<WaveformPoint[]>([]);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv');
   const [movementScore, setMovementScore] = useState(0);
@@ -212,6 +118,10 @@ export function RealtimeMonitoring() {
   const [holdSimulatedFallMarker, setHoldSimulatedFallMarker] = useState(false);
   // 模擬模式的虛擬人員座標（公尺）；無模擬時為 null。讓 2D 平面圖與 3D 立體圖在無硬體時也有人移動。
   const [simLocation, setSimLocation] = useState<{ x: number; y: number } | null>(null);
+  // 動線軌跡 / 停留熱力圖 / 跌倒回放（trail/heatGrid/lastFall 由 useTrackHistory 提供）
+  const [showTrail, setShowTrail] = useState(false);
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [replayOpen, setReplayOpen] = useState(false);
   const { isDeveloperMode, manualState, sensitivity, waveformSmoothing } = useDeveloper();
 
   // -- WebSocket hook: 接收 core_bridge.py 的即時數據 --
@@ -484,6 +394,17 @@ export function RealtimeMonitoring() {
   const deviceState = isRealDataActive ? 'online' : isSimulationActive ? 'simulating' : isConnected ? 'standby' : 'offline';
   // 同步給 setInterval 讀（凍結模擬人員停在跌倒點，整段警報期間不走動）
   useEffect(() => { alarmHoldRef.current = floorPlanFallVisible; }, [floorPlanFallVisible]);
+
+  // 動線軌跡 / 停留熱力圖 / 跌倒回放緩衝（邏輯抽至 useTrackHistory）
+  const { trail, heatGrid, lastFall } = useTrackHistory({
+    x: displayLocation.x,
+    y: displayLocation.y,
+    score: movementScore,
+    fallVisible: floorPlanFallVisible,
+    area: selectedArea,
+    geometry: roomGeometry,
+    active: isSimulationActive || isRealDataActive,
+  });
 
   const handleExport = (seconds: number) => {
     const pointsToExport = seconds * 10; // 10 points per second
@@ -1049,6 +970,32 @@ export function RealtimeMonitoring() {
                     區域平面圖
                   </h2>
                   <div className="flex items-center gap-1.5">
+                    {/* 動線軌跡 / 停留熱力圖 切換 */}
+                    <button
+                      onClick={() => setShowTrail(v => !v)}
+                      title="動線軌跡"
+                      className={cn("p-1 rounded-md transition-colors",
+                        showTrail ? "text-[#007AFF] bg-blue-50" : "text-slate-400 hover:text-[#007AFF] hover:bg-blue-50")}
+                    >
+                      <Route className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setShowHeatmap(v => !v)}
+                      title="停留熱力圖"
+                      className={cn("p-1 rounded-md transition-colors",
+                        showHeatmap ? "text-amber-600 bg-amber-50" : "text-slate-400 hover:text-amber-600 hover:bg-amber-50")}
+                    >
+                      <Flame className="w-3.5 h-3.5" />
+                    </button>
+                    {lastFall && (
+                      <button
+                        onClick={() => setReplayOpen(true)}
+                        title="回放最後一次跌倒"
+                        className="p-1 rounded-md text-red-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <History className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <span className="text-[10px] font-medium bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{selectedArea}</span>
                     <button
                       onClick={() => setEditorOpen(true)}
@@ -1071,6 +1018,27 @@ export function RealtimeMonitoring() {
                   {floorPlanFallVisible && <FallAlarmBanner area={selectedArea} />}
                   {/* Minimalist Floor Plan SVG Representation */}
                   <div className="w-full aspect-square max-w-sm relative border-4 border-slate-300 rounded-lg bg-white shadow-inner">
+                    {/* 停留熱力圖（最底層） */}
+                    {showHeatmap && heatGrid.length === HEAT_GX * HEAT_GY && (() => {
+                      const max = Math.max(1, ...heatGrid);
+                      return (
+                        <div className="absolute inset-0 pointer-events-none grid"
+                          style={{ gridTemplateColumns: `repeat(${HEAT_GX}, 1fr)`, gridTemplateRows: `repeat(${HEAT_GY}, 1fr)` }}>
+                          {heatGrid.map((v, i) => (
+                            <div key={i} style={{ background: heatCellColor(v / max) }} />
+                          ))}
+                        </div>
+                      );
+                    })()}
+                    {/* 動線軌跡（furniture 之上、人員之下） */}
+                    {showTrail && trail.length >= 2 && (
+                      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full pointer-events-none z-[6]">
+                        <polyline
+                          points={trail.map(p => `${Math.min(100, Math.max(0, (p.x / roomGeometry.width_m) * 100))},${Math.min(100, Math.max(0, (p.y / roomGeometry.height_m) * 100))}`).join(' ')}
+                          fill="none" stroke="#34C759" strokeOpacity={0.5} strokeWidth={1.4} strokeLinejoin="round" strokeLinecap="round"
+                        />
+                      </svg>
+                    )}
                     {selectedArea === '公共區域' ? (
                       <>
                         {/* Tables and Chairs for Public Area */}
@@ -1308,6 +1276,13 @@ export function RealtimeMonitoring() {
         open={editorOpen}
         onClose={() => setEditorOpen(false)}
         initial={roomGeometry}
+      />
+
+      <FallReplayModal
+        open={replayOpen}
+        onClose={() => setReplayOpen(false)}
+        geometry={roomGeometry}
+        event={lastFall}
       />
     </div>
   );
