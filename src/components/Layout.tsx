@@ -1,7 +1,7 @@
 import React, { Suspense, useState } from 'react';
 import { Sidebar } from './Sidebar';
 import { Outlet, useNavigate } from 'react-router-dom';
-import { WifiOff, ChevronRight, X } from 'lucide-react';
+import { WifiOff, ChevronRight, X, Menu, Activity } from 'lucide-react';
 import { getOfflineDevices } from '../lib/demoDevices';
 
 interface LayoutProps {
@@ -42,23 +42,50 @@ function OfflineDevicesBanner() {
 }
 
 export function Layout({ children }: LayoutProps) {
+  const [navOpen, setNavOpen] = useState(false);
+
   return (
     <div className="flex h-screen w-full bg-[#E8E1D5] text-slate-800 font-sans overflow-hidden">
-      <Sidebar />
-      <main className="flex-1 h-full overflow-y-auto p-6 md:p-8">
-        <div className="max-w-7xl mx-auto h-full">
-          <OfflineDevicesBanner />
-          {/* 受保護頁面的 lazy 載入邊界：切換頁面時側邊欄保留、僅內容區顯示載入指示 */}
-          <Suspense fallback={
-            <div className="min-h-[50vh] w-full flex items-center justify-center">
-              <div className="w-8 h-8 border-2 border-[#007AFF] border-t-transparent rounded-full animate-spin" />
+      {/* 手機抽屜背景遮罩（點擊關閉） */}
+      {navOpen && (
+        <div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={() => setNavOpen(false)} aria-hidden />
+      )}
+
+      <Sidebar mobileOpen={navOpen} onClose={() => setNavOpen(false)} />
+
+      <div className="flex-1 flex flex-col h-full min-w-0">
+        {/* 手機頂欄：漢堡選單 + 品牌（桌機隱藏，側欄已常駐） */}
+        <header className="md:hidden flex items-center gap-3 h-14 px-4 bg-[#2C363F] text-white shrink-0 shadow">
+          <button
+            onClick={() => setNavOpen(true)}
+            aria-label="開啟選單"
+            className="p-2 -ml-2 rounded-lg hover:bg-white/10 transition-colors"
+          >
+            <Menu className="w-5 h-5" />
+          </button>
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 bg-[#007AFF] rounded-lg flex items-center justify-center">
+              <Activity className="w-4 h-4 text-white" />
             </div>
-          }>
-            <Outlet />
-          </Suspense>
-          {children}
-        </div>
-      </main>
+            <span className="font-bold tracking-wide">Wi-Care</span>
+          </div>
+        </header>
+
+        <main className="flex-1 overflow-y-auto p-4 md:p-8">
+          <div className="max-w-7xl mx-auto h-full">
+            <OfflineDevicesBanner />
+            {/* 受保護頁面的 lazy 載入邊界：切換頁面時側邊欄保留、僅內容區顯示載入指示 */}
+            <Suspense fallback={
+              <div className="min-h-[50vh] w-full flex items-center justify-center">
+                <div className="w-8 h-8 border-2 border-[#007AFF] border-t-transparent rounded-full animate-spin" />
+              </div>
+            }>
+              <Outlet />
+            </Suspense>
+            {children}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

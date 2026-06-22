@@ -18,6 +18,7 @@ import {
   Building2,
   Crown,
   Sparkles,
+  X,
   type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -35,8 +36,10 @@ const ROLES: { id: UserRole; label: string; icon: LucideIcon; color: string; bad
   { id: 'admin',     label: '管理者',   icon: ShieldCheck, color: 'text-red-400',    badge: 'bg-red-500/20 text-red-400' },
 ];
 
-export function Sidebar() {
+export function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean; onClose?: () => void }) {
   const { user, logout, isDeveloper, viewAsRole, setViewAsRole } = useUser();
+  // 手機點選項後自動關閉抽屜；桌機（md+）onClose 不會被觸發（抽屜永遠開）
+  const go = (path: string) => { navigate(path); onClose?.(); };
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -94,7 +97,20 @@ export function Sidebar() {
   const currentRole = ROLES.find(r => r.id === user?.role);
 
   return (
-    <aside className="w-64 bg-[#2C363F] text-slate-300 flex flex-col h-full shadow-xl z-10 shrink-0">
+    <aside className={cn(
+      "w-64 bg-[#2C363F] text-slate-300 flex flex-col h-full shadow-xl shrink-0",
+      // 手機：固定式滑出抽屜；桌機（md+）：恢復靜態側欄
+      "fixed inset-y-0 left-0 z-50 transition-transform duration-300 md:static md:z-10 md:translate-x-0",
+      mobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
+    )}>
+      {/* 手機專用關閉鈕 */}
+      <button
+        onClick={onClose}
+        aria-label="關閉選單"
+        className="md:hidden absolute top-3 right-3 p-2 rounded-lg text-slate-400 hover:bg-white/10 hover:text-white transition-colors"
+      >
+        <X className="w-5 h-5" />
+      </button>
       <div className="p-6 border-b border-slate-700/50 flex flex-col items-center">
         <div className="w-20 h-20 rounded-full bg-slate-600 mb-4 overflow-hidden border-2 border-slate-500">
           <img
@@ -134,7 +150,7 @@ export function Sidebar() {
               onChange={(e) => {
                 const next = e.target.value as UserRole;
                 setViewAsRole(next === 'developer' ? null : next);
-                navigate('/realtime'); // 切換後導向各角色皆可見的頁面，避免停留在被隱藏的頁面
+                go('/realtime'); // 切換後導向各角色皆可見的頁面，避免停留在被隱藏的頁面
               }}
               className="w-full bg-[#1E252B] border border-slate-600/60 text-slate-200 text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-500/40 cursor-pointer"
             >
@@ -175,7 +191,7 @@ export function Sidebar() {
                 return (
                   <button
                     key={item.id}
-                    onClick={() => navigate(`/${item.id}`)}
+                    onClick={() => go(`/${item.id}`)}
                     className={cn(
                       "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200 relative group",
                       isActive

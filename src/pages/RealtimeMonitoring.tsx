@@ -524,12 +524,12 @@ export function RealtimeMonitoring() {
         </div>
       )}
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">即時監控面板</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-800 tracking-tight">即時監控面板</h1>
           <p className="text-slate-500 text-sm mt-1">CSI 頻譜感測與 AI 空間分析</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={() => setShowExportModal(true)}
             className="flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-700 px-4 py-2 rounded-lg shadow-sm border border-slate-100 transition-all active:scale-95"
@@ -580,7 +580,7 @@ export function RealtimeMonitoring() {
         <div className="lg:col-span-2 flex flex-col gap-6">
           
           {/* Top Info Cards */}
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5 flex items-center gap-4">
               <div className={cn(
                 "w-12 h-12 rounded-full flex items-center justify-center shrink-0",
